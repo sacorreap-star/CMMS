@@ -21,7 +21,8 @@ import {
   Redo,
   Edit2,
   X,
-  Book
+  Book,
+  Image
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -52,11 +53,18 @@ import {
   formatDistanceToNow
 } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
+
 import { cn } from './lib/utils';
 import { Machine, FunctionalNode, WorkOrder, KPI, MaintenanceSchedule, Company, Personnel, InventoryItem, PurchaseOrder, TechnicalName, ManufacturerRecommendation } from './types';
+import { Document, Page, pdfjs } from 'react-pdf';
+import { TransformWrapper, TransformComponent, useControls } from 'react-zoom-pan-pinch';
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
+
+pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 const COLORS = ['#10b981', '#f59e0b', '#ef4444'];
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 const parseLocalDate = (dateStr: string | null | undefined): Date => {
   if (!dateStr) return new Date();
@@ -68,6 +76,17 @@ const parseLocalDate = (dateStr: string | null | undefined): Date => {
   }
   const d = new Date(dateStr);
   return isNaN(d.getTime()) ? new Date() : d;
+};
+
+const ZoomControls = () => {
+  const { zoomIn, zoomOut, resetTransform } = useControls();
+  return (
+    <div className="absolute top-4 right-4 z-20 flex flex-col bg-white border border-[#141414] shadow-md">
+      <button onClick={() => zoomIn()} className="p-2 hover:bg-gray-100 border-b border-[#141414] font-bold" title="Acercar">+</button>
+      <button onClick={() => zoomOut()} className="p-2 hover:bg-gray-100 border-b border-[#141414] font-bold" title="Alejar">-</button>
+      <button onClick={() => resetTransform()} className="p-2 hover:bg-gray-100 text-[10px] font-bold uppercase" title="Restablecer">Reset</button>
+    </div>
+  );
 };
 
 const formatCurrency = (amount: number | string | null | undefined) => {
@@ -97,12 +116,15 @@ const isTaskDueOn = (s: MaintenanceSchedule, day: Date) => {
   // Calculate interval in days
   let intervalDays = 0;
   if (s.frequency_hours) {
-    intervalDays = Math.floor(s.frequency_hours / 24);
+    intervalDays = Math.floor(s.frequency_hours / 8);
   } else if (s.frequency_days) {
     intervalDays = s.frequency_days;
   }
 
   if (intervalDays <= 0) {
+    if (s.frequency_hours || s.frequency_days) {
+      return targetDay.getTime() >= firstDue.getTime();
+    }
     return isSameDay(firstDue, targetDay);
   }
 
@@ -242,111 +264,7 @@ function MaintenanceCalendar({
   );
 }
 
-function TreeNode({ nodes, parentId, onNodeClick }: { nodes: FunctionalNode[], parentId: number | null, onNodeClick: (node: FunctionalNode) => void }) {
-  const children = nodes.filter(n => n.parent_id === parentId);
-  if (children.length === 0) return null;
 
-  return (
-    <div className="flex flex-col items-center">
-      {/* Vertical line from parent down to children's horizontal line */}
-      {parentId !== null && (
-        <div className="w-px h-8 bg-[#141414]" />
-      )}
-      
-      <div className="flex gap-8 relative">
-        {/* Horizontal line for siblings */}
-        {children.length > 1 && (
-          <div className="absolute top-0 left-[60px] right-[60px] h-px bg-[#141414]" />
-        )}
-        
-        {children.map((node) => (
-          <div key={node.id} className="flex flex-col items-center relative">
-            {/* Vertical Connector Line from horizontal line down to node */}
-            <div className="w-px h-8 bg-[#141414]" />
-            
-            <div 
-              onClick={() => onNodeClick(node)}
-              className={cn(
-                "p-3 border min-w-[120px] text-center cursor-pointer transition-all z-10 shadow-sm",
-                node.is_critical 
-                  ? "border-red-600 bg-red-50 text-red-900 hover:bg-red-600 hover:text-white" 
-                  : "border-[#141414] bg-white hover:bg-[#141414] hover:text-[#E4E3E0]",
-                node.is_consumable && "border-dashed"
-              )}
-            >
-              <p className="text-[10px] font-bold uppercase">{node.name}</p>
-              {node.part_number && <p className="text-[8px] opacity-50 font-mono">{node.part_number}</p>}
-              {node.is_critical && <p className="text-[8px] font-bold uppercase mt-1">Crítico</p>}
-            </div>
-
-            {/* Sub-tree */}
-            <div className="mt-0">
-              <TreeNode nodes={nodes} parentId={node.id} onNodeClick={onNodeClick} />
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-const TreeListItem: React.FC<{ 
-  node: FunctionalNode, 
-  allNodes: FunctionalNode[], 
-  onDelete: (id: number) => void | Promise<void>, 
-  onEdit: (node: FunctionalNode) => void,
-  level: number 
-}> = ({ node, allNodes, onDelete, onEdit, level }) => {
-  const children = allNodes.filter(n => n.parent_id === node.id);
-  
-  return (
-    <div className="space-y-1">
-      <div 
-        className="flex items-center justify-between p-2 border border-[#141414]/10 bg-white hover:bg-[#141414]/5 transition-colors"
-        style={{ marginLeft: `${level * 20}px` }}
-      >
-        <div className="flex items-center">
-          <div className={cn(
-            "w-2 h-2 mr-2 rounded-full",
-            node.is_critical ? "bg-red-600" : node.is_consumable ? "bg-amber-500" : "bg-[#141414]"
-          )} />
-          <div>
-            <p className={cn("text-xs font-bold uppercase leading-tight", node.is_critical && "text-red-600")}>
-              {node.name} {node.is_critical && "(CRÍTICO)"}
-            </p>
-            <p className="text-[8px] opacity-60 font-mono">{node.part_number || 'S/N'} • {node.supplier || 'Sin proveedor'}</p>
-          </div>
-        </div>
-        <div className="flex items-center space-x-1">
-          <button 
-            onClick={() => onEdit(node)} 
-            className="text-blue-600 hover:bg-blue-50 p-1 rounded"
-            title="Editar pieza"
-          >
-            <Edit2 className="w-3 h-3" />
-          </button>
-          <button 
-            onClick={() => onDelete(node.id)} 
-            className="text-red-600 hover:bg-red-50 p-1 rounded"
-            title="Eliminar pieza"
-          >
-            <Trash2 className="w-3 h-3" />
-          </button>
-        </div>
-      </div>
-      {children.map(child => (
-        <TreeListItem 
-          key={child.id} 
-          node={child} 
-          allNodes={allNodes} 
-          onDelete={onDelete} 
-          onEdit={onEdit}
-          level={level + 1} 
-        />
-      ))}
-    </div>
-  );
-};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -368,17 +286,20 @@ export default function App() {
   const [manufacturerRecommendations, setManufacturerRecommendations] = useState<ManufacturerRecommendation[]>([]);
   
   // Modal states
-  const [showTreeActionModal, setShowTreeActionModal] = useState(false);
-  const [showTreeEditor, setShowTreeEditor] = useState(false);
+  const [showFailureAnalysisModal, setShowFailureAnalysisModal] = useState(false);
   const [showTreeVisualizer, setShowTreeVisualizer] = useState(false);
+  const [numPages, setNumPages] = useState<number>();
+  const [pageNumber, setPageNumber] = useState<number>(1);
+
   const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [showDiagnosticModal, setShowDiagnosticModal] = useState(false);
   const [showNewWOModal, setShowNewWOModal] = useState(false);
   const [showAddPersonnelModal, setShowAddPersonnelModal] = useState(false);
   const [showAddCompanyModal, setShowAddCompanyModal] = useState(false);
   const [showTaskDetailsModal, setShowTaskDetailsModal] = useState(false);
   const [isEditingTask, setIsEditingTask] = useState(false);
   const [editedTask, setEditedTask] = useState<MaintenanceSchedule | null>(null);
+  const [diagnosticRootCause, setDiagnosticRootCause] = useState('');
+
   const [showTechnicalNameModal, setShowTechnicalNameModal] = useState(false);
   const [showAddMachineModal, setShowAddMachineModal] = useState(false);
   const [showAddRecommendationModal, setShowAddRecommendationModal] = useState(false);
@@ -394,9 +315,10 @@ export default function App() {
     personnel_id: '',
     required_items: '',
     start_date: format(new Date(), 'yyyy-MM-dd'),
-    description: '' 
+    description: '',
+    activities: [] as { id: number, description: string, is_completed: boolean, personnel_id?: number | null }[]
   });
-  const [newWO, setNewWO] = useState({ machine_id: '', part_id: '', type: 'preventive', description: '', personnel_id: '' });
+  const [newWO, setNewWO] = useState({ machine_id: '', part_id: '', type: 'preventive', description: '', personnel_id: '', activities: [] as { id: number, description: string, is_completed: boolean, personnel_id?: number | null }[] });
   const [newPersonnel, setNewPersonnel] = useState({ name: '', company_id: '' });
   const [newCompany, setNewCompany] = useState({ name: '' });
   const [newTechnicalName, setNewTechnicalName] = useState({ name: '', colloquial_name: '', description: '' });
@@ -408,7 +330,8 @@ export default function App() {
     frequency_hours: '',
     frequency_days: '',
     part_number: '',
-    description: ''
+    description: '',
+    document_url: ''
   });
   const [technicalNameTarget, setTechnicalNameTarget] = useState<{ type: string, field: string } | null>(null);
   const [technicalNameSearch, setTechnicalNameSearch] = useState('');
@@ -434,8 +357,7 @@ export default function App() {
   };
 
   // Diagnostic state
-  const [diagnosticStep, setDiagnosticStep] = useState(0);
-  const [diagnosticPath, setDiagnosticPath] = useState<FunctionalNode[]>([]);
+
 
   useEffect(() => {
     fetchData();
@@ -451,6 +373,8 @@ export default function App() {
   const [startWOPersonnelId, setStartWOPersonnelId] = useState('');
   const [startWODiagnostic, setStartWODiagnostic] = useState('');
   const [showAddPersonnelInWO, setShowAddPersonnelInWO] = useState(false);
+  const [showAddPersonnelInNewWO, setShowAddPersonnelInNewWO] = useState(false);
+  const [newPersonnelTarget, setNewPersonnelTarget] = useState<{type: 'main' | 'activity', index?: number} | null>(null);
   const [newPersonnelInWO, setNewPersonnelInWO] = useState({ name: '', company_id: '' });
   const [showAddCompanyInWO, setShowAddCompanyInWO] = useState(false);
   const [newCompanyInWO, setNewCompanyInWO] = useState({ name: '' });
@@ -535,7 +459,12 @@ export default function App() {
           frequency_days: newRecommendation.frequency_days ? Number(newRecommendation.frequency_days) : null
         })
       });
-      if (!res.ok) throw new Error('Failed');
+      if (!res.ok) {
+        if (res.status === 413) {
+          throw new Error("El archivo es demasiado grande para ser procesado por el servidor.");
+        }
+        throw new Error(`Error HTTP: ${res.status}`);
+      }
       fetchData();
       setShowAddRecommendationModal(false);
       setNewRecommendation({
@@ -546,9 +475,13 @@ export default function App() {
         frequency_hours: '',
         frequency_days: '',
         part_number: '',
-        description: ''
+        description: '',
+        document_url: ''
       });
-    } catch (err) { console.error(err); }
+    } catch (err: any) { 
+      console.error(err); 
+      showAlert(`Error al guardar: ${err.message}`);
+    }
   };
 
   const deleteManufacturerRecommendation = async (id: number) => {
@@ -867,7 +800,6 @@ export default function App() {
       });
       if (!res.ok) throw new Error(`Sync tree failed: ${res.status}`);
       await fetchTree(selectedMachine.id);
-      setShowTreeEditor(false);
     } catch (err) {
       console.error("Error saving tree:", err);
     }
@@ -900,7 +832,8 @@ export default function App() {
         personnel_id: '',
         required_items: '',
         start_date: format(new Date(), 'yyyy-MM-dd'),
-        description: '' 
+        description: '',
+        activities: []
       });
       setShowScheduleModal(false);
     } catch (err) {
@@ -958,8 +891,10 @@ export default function App() {
           machine_id: task.machine_id,
           part_id: task.part_id,
           schedule_id: task.id,
+          personnel_id: task.personnel_id,
           type: 'preventive',
-          description: `Mantenimiento programado: ${task.task_name}`
+          description: `Mantenimiento programado: ${task.task_name}`,
+          activities: task.activities ? task.activities.map(a => ({ ...a, is_completed: false })) : []
         })
       });
       if (!res.ok) throw new Error(`Create work order failed: ${res.status}`);
@@ -970,7 +905,7 @@ export default function App() {
       
       let intervalDays = 0;
       if (task.frequency_hours) {
-        intervalDays = Math.floor(task.frequency_hours / 24);
+        intervalDays = Math.floor(task.frequency_hours / 8);
       } else if (task.frequency_days) {
         intervalDays = task.frequency_days;
       }
@@ -1022,8 +957,7 @@ export default function App() {
       if (!res.ok) throw new Error(`Create work order failed: ${res.status}`);
       await fetchData();
       setShowNewWOModal(false);
-      setShowDiagnosticModal(false);
-      setNewWO({ machine_id: '', part_id: '', type: 'preventive', description: '', personnel_id: '' });
+      setNewWO({ machine_id: '', part_id: '', type: 'preventive', description: '', personnel_id: '', activities: [] });
       setSelectedMachine(null);
       setFunctionalTree([]);
     } catch (err) {
@@ -1032,9 +966,10 @@ export default function App() {
   };
 
   const startWorkOrder = (id: number) => {
+    const wo = workOrders.find(w => w.id === id);
     setWOToStart(id);
-    setStartWOPersonnelId('');
-    setStartWODiagnostic('');
+    setStartWOPersonnelId(wo?.personnel_id ? String(wo.personnel_id) : '');
+    setStartWODiagnostic(wo?.diagnostic_notes || '');
     setShowStartWOModal(true);
   };
 
@@ -1074,7 +1009,34 @@ export default function App() {
     }
   };
 
+  const toggleActivityCompletion = async (wo: any, activityIdx: number, isCompleted: boolean) => {
+    try {
+      const updatedActivities = [...wo.activities];
+      updatedActivities[activityIdx].is_completed = isCompleted;
+      
+      const res = await fetch(`/api/work-orders/${wo.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activities: updatedActivities })
+      });
+      if (!res.ok) throw new Error('Failed to update activity');
+      fetchData();
+    } catch (err) {
+      console.error(err);
+      showAlert("Error al actualizar la actividad");
+    }
+  };
+
   const closeWorkOrder = async (id: number) => {
+    const wo = workOrders.find(w => w.id === id);
+    if (wo && wo.activities && wo.activities.length > 0) {
+      const allCompleted = wo.activities.every(a => a.is_completed);
+      if (!allCompleted) {
+        showAlert("No se puede finalizar la orden de trabajo porque hay actividades pendientes.");
+        return;
+      }
+    }
+
     try {
       const res = await fetch(`/api/work-orders/${id}/close`, { method: 'PATCH' });
       if (!res.ok) throw new Error(`Close work order failed: ${res.status}`);
@@ -1130,7 +1092,7 @@ export default function App() {
           <div className="space-y-8">
             <header className="flex justify-between items-end">
               <div>
-                <p className="text-xs uppercase tracking-widest opacity-50 font-mono">Vista General</p>
+                <p className="text-xs uppercase tracking-widest opacity-50 font-mono">Estado general</p>
                 <h2 className="text-4xl font-serif italic">Estado de Planta</h2>
               </div>
               <div className="text-right font-mono text-sm opacity-50">
@@ -1401,7 +1363,18 @@ export default function App() {
                           onClick={async () => {
                             setSelectedMachine(machine);
                             await fetchTree(machine.id);
-                            setShowTreeActionModal(true);
+                            if (machine.has_document) {
+                              try {
+                                const res = await fetch(`/api/machines/${machine.id}/document`);
+                                if (res.ok) {
+                                  const data = await res.json();
+                                  setSelectedMachine(prev => prev ? { ...prev, functional_tree_image_url: data.functional_tree_image_url } : null);
+                                }
+                              } catch (err) {
+                                console.error("Error fetching document:", err);
+                              }
+                            }
+                            setShowTreeVisualizer(true);
                           }}
                           className="text-xs font-bold uppercase flex items-center hover:underline border border-[#141414] px-2 py-1"
                         >
@@ -1422,14 +1395,12 @@ export default function App() {
                           onClick={() => {
                             setSelectedMachine(machine);
                             fetchTree(machine.id).then(tree => {
-                              setDiagnosticPath([]);
-                              setDiagnosticStep(0);
-                              setShowDiagnosticModal(true);
+                              setShowFailureAnalysisModal(true);
                             });
                           }}
                           className="bg-[#141414] text-[#E4E3E0] px-3 py-1 text-xs font-bold uppercase flex items-center"
                         >
-                          <Stethoscope className="w-3 h-3 mr-1" /> Diagnóstico
+                          <Stethoscope className="w-3 h-3 mr-1" /> Análisis de Falla
                         </button>
                       </div>
                   </div>
@@ -1437,346 +1408,135 @@ export default function App() {
               ))}
             </div>
 
-            {/* Tree Action Selection Modal */}
-            {showTreeActionModal && selectedMachine && (
-              <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-8 z-50">
-                <div className="bg-[#E4E3E0] border border-[#141414] w-full max-w-sm p-8 space-y-6">
-                  <h3 className="text-2xl font-serif italic text-center">Gestión de Árbol Funcional</h3>
-                  <p className="text-sm text-center opacity-70">¿Qué acción desea realizar para la {selectedMachine.name}?</p>
-                  <div className="grid grid-cols-1 gap-4">
-                    <button 
-                      onClick={() => {
-                        setShowTreeActionModal(false);
-                        setShowTreeVisualizer(true);
-                      }}
-                      className="p-4 border border-[#141414] bg-white hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors font-bold uppercase text-sm flex items-center justify-center"
-                    >
-                      <BarChart3 className="w-4 h-4 mr-2" /> Visualizar Mapa
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setShowTreeActionModal(false);
-                        setShowTreeEditor(true);
-                      }}
-                      className="p-4 border border-[#141414] bg-white hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors font-bold uppercase text-sm flex items-center justify-center"
-                    >
-                      <Settings className="w-4 h-4 mr-2" /> Modificar Estructura
-                    </button>
-                    <button 
-                      onClick={() => setShowTreeActionModal(false)}
-                      className="text-xs font-bold uppercase hover:underline text-center"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Tree Visualizer Modal (Conceptual Map) */}
+            {/* Tree Visualizer Modal (Image/PDF Only) */}
             {showTreeVisualizer && selectedMachine && (
               <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-8 z-50">
-                <div className="bg-[#E4E3E0] border border-[#141414] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
+                <div className="bg-[#E4E3E0] border border-[#141414] w-full max-w-6xl h-[90vh] flex flex-col">
                   <div className="p-6 border-b border-[#141414] flex justify-between items-center">
                     <div>
-                      <h3 className="text-2xl font-serif italic leading-none">Mapa Conceptual: {selectedMachine.name}</h3>
-                      <p className="text-[10px] font-mono uppercase opacity-50 mt-1">Estructura Funcional Completa</p>
+                      <h3 className="text-2xl font-serif italic leading-none">Árbol Funcional: {selectedMachine.name}</h3>
+                      <p className="text-[10px] font-mono uppercase opacity-50 mt-1">Visualización de la estructura</p>
                     </div>
-                    <button onClick={() => setShowTreeVisualizer(false)} className="text-xs font-bold uppercase hover:underline">Cerrar</button>
+                    <div className="flex items-center space-x-4">
+                      <label className="cursor-pointer text-xs font-bold uppercase border border-[#141414] px-4 py-2 hover:bg-gray-100">
+                        {selectedMachine.functional_tree_image_url ? 'Cambiar Documento' : 'Subir Documento'}
+                        <input 
+                          type="file" 
+                          accept="image/*,.pdf" 
+                          className="hidden" 
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              if (file.size > MAX_FILE_SIZE) {
+                                showAlert("El archivo es demasiado grande. El tamaño máximo permitido es 10MB.");
+                                return;
+                              }
+                              const reader = new FileReader();
+                              reader.onloadend = async () => {
+                                const base64String = reader.result as string;
+                                try {
+                                  const res = await fetch(`/api/machines/${selectedMachine.id}`, {
+                                    method: 'PATCH',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ functional_tree_image_url: base64String })
+                                  });
+                                  if (!res.ok) {
+                                    if (res.status === 413) {
+                                      throw new Error("El archivo es demasiado grande para ser procesado por el servidor.");
+                                    }
+                                    const errorData = await res.json().catch(() => ({}));
+                                    throw new Error(errorData.error || `Error HTTP: ${res.status}`);
+                                  }
+                                  fetchData();
+                                  setSelectedMachine({ ...selectedMachine, functional_tree_image_url: base64String });
+                                } catch (err: any) {
+                                  console.error(err);
+                                  showAlert(`Error al subir el documento: ${err.message}`);
+                                }
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }} 
+                        />
+                      </label>
+                      <button onClick={() => setShowTreeVisualizer(false)} className="text-xs font-bold uppercase hover:underline">Cerrar</button>
+                    </div>
                   </div>
                   <div className="flex-1 bg-white relative overflow-hidden">
-                    <TransformWrapper
-                      key={`tree-${selectedMachine.id}`}
-                      initialScale={0.1}
-                      initialPositionX={0}
-                      initialPositionY={0}
-                      centerOnInit={true}
-                      limitToBounds={false}
-                      minScale={0.01}
-                      maxScale={5}
-                    >
-                      {({ zoomIn, zoomOut, resetTransform }) => (
-                        <>
-                          <div className="absolute top-6 right-6 z-20 flex flex-col space-y-2">
-                            <button onClick={() => zoomIn()} className="p-3 bg-white border border-[#141414] hover:bg-gray-100 shadow-lg"><Plus className="w-5 h-5" /></button>
-                            <button onClick={() => zoomOut()} className="p-3 bg-white border border-[#141414] hover:bg-gray-100 shadow-lg"><X className="w-5 h-5 rotate-45" /></button>
-                            <button onClick={() => resetTransform()} className="p-3 bg-white border border-[#141414] hover:bg-gray-100 shadow-lg"><Undo className="w-5 h-5" /></button>
-                          </div>
-                          <TransformComponent
-                            wrapperStyle={{ width: "100%", height: "100%", cursor: "grab" }}
-                            contentStyle={{ 
-                              display: "flex", 
-                              justifyContent: "center", 
-                              alignItems: "center",
-                              width: "max-content",
-                              height: "max-content",
-                              minWidth: "100%",
-                              minHeight: "100%",
-                              padding: "200px"
-                            }}
-                          >
-                            <div className="relative">
-                              <TreeNode 
-                                nodes={functionalTree} 
-                                parentId={null} 
-                                onNodeClick={(node) => {}}
+                    {selectedMachine.functional_tree_image_url ? (
+                      <TransformWrapper
+                        initialScale={1}
+                        minScale={0.1}
+                        maxScale={8}
+                        centerOnInit={true}
+                        limitToBounds={false}
+                        wheel={{ step: 0.1 }}
+                      >
+                        <div className="w-full h-full relative bg-gray-50">
+                          <ZoomControls />
+                          
+                          <TransformComponent wrapperClass="!w-full !h-full" contentClass="flex items-center justify-center m-auto">
+                            {selectedMachine.functional_tree_image_url!.startsWith('data:application/pdf') ? (
+                              <div className="flex flex-col items-center">
+                                <Document 
+                                  file={selectedMachine.functional_tree_image_url} 
+                                  onLoadSuccess={({ numPages }) => setNumPages(numPages)}
+                                  className="border border-[#141414] shadow-lg bg-white"
+                                >
+                                  <Page 
+                                    pageNumber={pageNumber} 
+                                    renderTextLayer={false} 
+                                    renderAnnotationLayer={false} 
+                                    devicePixelRatio={Math.max(window.devicePixelRatio || 1, 3)}
+                                  />
+                                </Document>
+                              </div>
+                            ) : (
+                              <img 
+                                src={selectedMachine.functional_tree_image_url} 
+                                alt={`Árbol funcional de ${selectedMachine.name}`} 
+                                className="max-w-full max-h-full object-contain border border-[#141414] shadow-lg bg-white"
                               />
-                            </div>
+                            )}
                           </TransformComponent>
-                        </>
-                      )}
-                    </TransformWrapper>
+
+                          {/* Pagination for PDF */}
+                          {selectedMachine.functional_tree_image_url!.startsWith('data:application/pdf') && numPages && (
+                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center space-x-4 bg-white/90 backdrop-blur-sm p-2 border border-[#141414] shadow-md z-20">
+                              <button 
+                                disabled={pageNumber <= 1} 
+                                onClick={() => setPageNumber(prev => prev - 1)}
+                                className="px-3 py-1 border border-[#141414] text-xs font-bold uppercase disabled:opacity-50 hover:bg-gray-100"
+                              >
+                                Anterior
+                              </button>
+                              <span className="text-xs font-mono">
+                                Página {pageNumber} de {numPages}
+                              </span>
+                              <button 
+                                disabled={pageNumber >= numPages} 
+                                onClick={() => setPageNumber(prev => prev + 1)}
+                                className="px-3 py-1 border border-[#141414] text-xs font-bold uppercase disabled:opacity-50 hover:bg-gray-100"
+                              >
+                                Siguiente
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </TransformWrapper>
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50 p-4 text-center">
+                        <Image className="w-16 h-16 opacity-20 mb-4" />
+                        <p className="text-sm font-bold uppercase opacity-50">No hay documento del árbol funcional</p>
+                        <p className="text-xs italic opacity-40 mt-2">Utilice el botón "Subir Documento" para añadir una imagen o PDF.</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             )}
 
-            {/* Tree Editor Modal */}
-            {showTreeEditor && selectedMachine && (
-              <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-8 z-50">
-                <div className="bg-[#E4E3E0] border border-[#141414] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
-                  <div className="p-6 border-b border-[#141414] flex justify-between items-center">
-                    <h3 className="text-2xl font-serif italic">Editor de Árbol: {selectedMachine.name}</h3>
-                    <button onClick={() => setShowTreeEditor(false)} className="text-xs font-bold uppercase hover:underline">Cerrar</button>
-                  </div>
-                    <div className="p-6 overflow-y-auto flex-1 grid grid-cols-1 lg:grid-cols-3 gap-8">
-                      <div className="space-y-4 lg:col-span-1">
-                        <div className="flex justify-between items-center">
-                          <h4 className="text-sm font-bold uppercase">{editingNodeId ? 'Editar Pieza' : 'Añadir Nueva Pieza'}</h4>
-                          <div className="flex space-x-2">
-                            <button 
-                              onClick={undoTreeChange}
-                              disabled={treeHistory.length === 0}
-                              className={`text-[10px] font-bold uppercase flex items-center px-2 py-1 border border-[#141414] ${treeHistory.length === 0 ? 'opacity-30 cursor-not-allowed' : 'hover:bg-white'}`}
-                              title="Deshacer"
-                            >
-                              <Undo className="w-3 h-3" />
-                            </button>
-                            <button 
-                              onClick={redoTreeChange}
-                              disabled={treeRedoStack.length === 0}
-                              className={`text-[10px] font-bold uppercase flex items-center px-2 py-1 border border-[#141414] ${treeRedoStack.length === 0 ? 'opacity-30 cursor-not-allowed' : 'hover:bg-white'}`}
-                              title="Rehacer"
-                            >
-                              <Redo className="w-3 h-3" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-1 gap-3">
-                          <div className="flex gap-2">
-                            <select
-                              value={newPart.name}
-                              onChange={(e) => setNewPart({ ...newPart, name: e.target.value })}
-                              className="flex-1 bg-white border border-[#141414] p-2 text-xs"
-                            >
-                              <option value="">Seleccionar de Biblioteca...</option>
-                              {technicalNames.map(tn => (
-                                <option key={tn.id} value={tn.name}>
-                                  {tn.name} {tn.colloquial_name ? `(${tn.colloquial_name})` : ''}
-                                </option>
-                              ))}
-                            </select>
-                            <input 
-                              placeholder="Nombre de la pieza" 
-                              className="flex-1 p-2 border border-[#141414] bg-white text-sm"
-                              value={newPart.name}
-                              onChange={e => setNewPart({...newPart, name: e.target.value})}
-                            />
-                            <button 
-                              onClick={() => { setTechnicalNameTarget({ type: 'tree', field: 'name' }); setShowTechnicalNameModal(true); }}
-                              className="border border-[#141414] px-2 hover:bg-gray-100"
-                            >
-                              <Book className="w-4 h-4" />
-                            </button>
-                          </div>
-                          <div className="grid grid-cols-2 gap-3">
-                            <input 
-                              placeholder="Nº Parte" 
-                              className="w-full p-2 border border-[#141414] bg-white text-sm"
-                              value={newPart.part_number}
-                              onChange={e => setNewPart({...newPart, part_number: e.target.value})}
-                            />
-                            <input 
-                              placeholder="Proveedor" 
-                              className="w-full p-2 border border-[#141414] bg-white text-sm"
-                              value={newPart.supplier}
-                              onChange={e => setNewPart({...newPart, supplier: e.target.value})}
-                            />
-                          </div>
-                          <select 
-                            className="w-full p-2 border border-[#141414] bg-white text-sm"
-                            value={newPart.parent_id || ''}
-                            onChange={e => setNewPart({...newPart, parent_id: e.target.value ? Number(e.target.value) : null})}
-                          >
-                            <option value="">Sin padre (Raíz)</option>
-                            {treeEditState.filter(n => n.id !== editingNodeId).map(node => (
-                              <option key={node.id} value={node.id}>{node.name}</option>
-                            ))}
-                          </select>
-                          <div className="flex items-center space-x-4 p-2 border border-dashed border-[#141414]">
-                            <div className="flex items-center space-x-2">
-                              <input 
-                                type="checkbox" 
-                                id="is_consumable"
-                                checked={newPart.is_consumable}
-                                onChange={e => setNewPart({...newPart, is_consumable: e.target.checked})}
-                              />
-                              <label htmlFor="is_consumable" className="text-xs font-bold uppercase">Es consumible</label>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              <input 
-                                type="checkbox" 
-                                id="is_critical"
-                                checked={newPart.is_critical}
-                                onChange={e => setNewPart({...newPart, is_critical: e.target.checked})}
-                              />
-                              <label htmlFor="is_critical" className="text-xs font-bold uppercase text-red-600">Es Crítico</label>
-                            </div>
-                            {newPart.is_consumable && (
-                              <input 
-                                placeholder="Vida útil (h)" 
-                                type="number"
-                                className="flex-1 p-1 border border-[#141414] bg-white text-xs"
-                                value={newPart.life_expectancy_hours}
-                                onChange={e => setNewPart({...newPart, life_expectancy_hours: e.target.value})}
-                              />
-                            )}
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <button 
-                            onClick={addPartLocal}
-                            className="w-full bg-white border border-[#141414] text-[#141414] py-2 text-sm font-bold uppercase flex items-center justify-center hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
-                          >
-                            {editingNodeId ? <Save className="w-4 h-4 mr-2" /> : <Plus className="w-4 h-4 mr-2" />}
-                            {editingNodeId ? 'Actualizar Pieza (Local)' : 'Añadir (Local)'}
-                          </button>
-                          {editingNodeId && (
-                            <button 
-                              onClick={() => {
-                                setEditingNodeId(null);
-                                setNewPart({ name: '', is_consumable: false, life_expectancy_hours: '', part_number: '', supplier: '', parent_id: '' });
-                              }}
-                              className="w-full text-[10px] font-bold uppercase hover:underline"
-                            >
-                              Cancelar Edición
-                            </button>
-                          )}
-                        </div>
-                        
-                        <div className="pt-4 border-t border-[#141414] space-y-3">
-                          <p className="text-[10px] text-amber-600 font-bold uppercase text-center animate-pulse">
-                            Recuerde guardar los cambios para persistir en la base de datos
-                          </p>
-                          <button 
-                            onClick={saveTreeChanges}
-                            className="w-full bg-[#141414] text-[#E4E3E0] py-3 text-sm font-bold uppercase flex items-center justify-center shadow-lg"
-                          >
-                            <Save className="w-4 h-4 mr-2" /> Guardar Cambios en DB
-                          </button>
-                        </div>
-                      </div>
-                      
-                      <div className="lg:col-span-2 flex flex-col space-y-4">
-                        <div className="flex justify-between items-center">
-                          <h4 className="text-sm font-bold uppercase">Vista Previa en Tiempo Real</h4>
-                          <div className="flex items-center space-x-2">
-                            <span className="text-[10px] bg-yellow-200 px-2 py-0.5 font-bold uppercase">Jerarquía Visual</span>
-                            <span className="text-[9px] opacity-50 font-mono">Usa scroll/pinch para zoom</span>
-                          </div>
-                        </div>
-                        <div className="flex-1 border border-[#141414] bg-white overflow-hidden relative min-h-[400px]">
-                          <TransformWrapper
-                            initialScale={0.5}
-                            initialPositionX={0}
-                            initialPositionY={0}
-                            centerOnInit={true}
-                            limitToBounds={false}
-                            minScale={0.1}
-                            maxScale={5}
-                          >
-                            {({ zoomIn, zoomOut, resetTransform }) => (
-                              <>
-                                <div className="absolute top-4 right-4 z-20 flex flex-col space-y-2">
-                                  <button 
-                                    onClick={() => zoomIn()} 
-                                    className="p-2 bg-white border border-[#141414] hover:bg-gray-100 shadow-sm"
-                                    title="Zoom In"
-                                  >
-                                    <Plus className="w-4 h-4" />
-                                  </button>
-                                  <button 
-                                    onClick={() => zoomOut()} 
-                                    className="p-2 bg-white border border-[#141414] hover:bg-gray-100 shadow-sm"
-                                    title="Zoom Out"
-                                  >
-                                    <X className="w-4 h-4 rotate-45" />
-                                  </button>
-                                  <button 
-                                    onClick={() => resetTransform()} 
-                                    className="p-2 bg-white border border-[#141414] hover:bg-gray-100 shadow-sm"
-                                    title="Reset"
-                                  >
-                                    <Undo className="w-4 h-4" />
-                                  </button>
-                                </div>
-                                <TransformComponent
-                                  wrapperStyle={{
-                                    width: "100%",
-                                    height: "100%",
-                                    cursor: "grab"
-                                  }}
-                                  contentStyle={{
-                                    display: "flex",
-                                    justifyContent: "center",
-                                    alignItems: "center",
-                                    width: "max-content",
-                                    height: "max-content",
-                                    minWidth: "100%",
-                                    minHeight: "100%",
-                                    padding: "150px"
-                                  }}
-                                >
-                                  <div className="relative">
-                                    <TreeNode 
-                                      nodes={treeEditState} 
-                                      parentId={null} 
-                                      onNodeClick={(node) => editPartLocal(node)} 
-                                    />
-                                    {treeEditState.length === 0 && (
-                                      <p className="text-xs opacity-50 italic text-center">El árbol está vacío.</p>
-                                    )}
-                                  </div>
-                                </TransformComponent>
-                              </>
-                            )}
-                          </TransformWrapper>
-                        </div>
-                        <div className="space-y-2">
-                          <h4 className="text-xs font-bold uppercase opacity-60">Lista de Componentes</h4>
-                          <div className="border border-[#141414] bg-white p-4 max-h-[200px] overflow-y-auto">
-                            <div className="space-y-1">
-                              {treeEditState.filter(n => !n.parent_id).map(rootNode => (
-                                <TreeListItem 
-                                  key={rootNode.id} 
-                                  node={rootNode} 
-                                  allNodes={treeEditState} 
-                                  onDelete={deletePartLocal} 
-                                  onEdit={editPartLocal}
-                                  level={0} 
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  <div className="p-6 border-t border-[#141414] flex justify-end">
-                    <button onClick={() => setShowTreeEditor(false)} className="text-xs font-bold uppercase hover:underline">Cerrar Editor</button>
-                  </div>
-                </div>
-              </div>
-            )}
+
 
             {/* Schedule Modal */}
             {showScheduleModal && selectedMachine && (
@@ -1873,6 +1633,59 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase opacity-50">Actividades (Opcional)</label>
+                      {newSchedule.activities.map((activity, idx) => (
+                        <div key={activity.id} className="flex flex-col space-y-1 p-2 border border-[#141414] bg-white">
+                          <div className="flex items-center space-x-2">
+                            <input 
+                              type="text"
+                              className="flex-1 p-2 border border-[#141414] bg-white text-sm"
+                              placeholder={`Actividad ${idx + 1}`}
+                              value={activity.description}
+                              onChange={e => {
+                                const updated = [...newSchedule.activities];
+                                updated[idx].description = e.target.value;
+                                setNewSchedule({ ...newSchedule, activities: updated });
+                              }}
+                            />
+                            <button 
+                              onClick={() => {
+                                const updated = newSchedule.activities.filter((_, i) => i !== idx);
+                                setNewSchedule({ ...newSchedule, activities: updated });
+                              }}
+                              className="p-2 text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <select
+                            className="w-full p-2 border border-[#141414] bg-gray-50 text-xs"
+                            value={activity.personnel_id || ''}
+                            onChange={e => {
+                              const updated = [...newSchedule.activities];
+                              updated[idx].personnel_id = e.target.value ? Number(e.target.value) : null;
+                              setNewSchedule({ ...newSchedule, activities: updated });
+                            }}
+                          >
+                            <option value="">Sin responsable asignado...</option>
+                            {personnel.map(p => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                      <button 
+                        onClick={() => {
+                          setNewSchedule({ ...newSchedule, activities: [...newSchedule.activities, { id: Date.now(), description: '', is_completed: false }] });
+                        }}
+                        className="text-xs font-bold uppercase border border-[#141414] px-3 py-1 hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                      >
+                        + Agregar Actividad
+                      </button>
+                    </div>
+
                     <div className="flex space-x-2">
                       <button onClick={() => setShowScheduleModal(false)} className="flex-1 border border-[#141414] py-2 text-sm font-bold uppercase">Cancelar</button>
                       <button onClick={addSchedule} className="flex-1 bg-[#141414] text-[#E4E3E0] py-2 text-sm font-bold uppercase">Programar</button>
@@ -1882,146 +1695,76 @@ export default function App() {
               </div>
             )}
 
-            {/* Diagnostic Modal */}
-            {showDiagnosticModal && selectedMachine && (
+            {/* Failure Analysis Modal */}
+            {showFailureAnalysisModal && selectedMachine && (
               <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-8 z-50">
-                <div className="bg-[#E4E3E0] border border-[#141414] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
-                  <div className="p-6 border-b border-[#141414] flex justify-between items-center">
+                <div className="bg-[#E4E3E0] border border-[#141414] w-full max-w-lg p-8 max-h-[90vh] overflow-y-auto">
+                  <div className="flex justify-between items-center mb-8">
                     <div>
-                      <h3 className="text-2xl font-serif italic leading-none">Diagnóstico Guiado: {selectedMachine.name}</h3>
-                      <p className="text-[10px] font-mono uppercase opacity-50 mt-1">Siga la ruta en el árbol para identificar la falla</p>
+                      <h3 className="text-2xl font-serif italic leading-none">Análisis de Falla</h3>
+                      <p className="text-[10px] font-mono uppercase opacity-50 mt-1">{selectedMachine.name}</p>
                     </div>
-                    <button onClick={() => setShowDiagnosticModal(false)} className="text-xs font-bold uppercase hover:underline">Cancelar</button>
+                    <button onClick={() => setShowFailureAnalysisModal(false)} className="text-xs font-bold uppercase hover:underline">Cerrar</button>
                   </div>
-                  
-                  <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-                    {/* Tree View for Navigation */}
-                    <div className="flex-1 bg-white relative overflow-hidden border-r border-[#141414]">
-                      <TransformWrapper
-                        initialScale={0.4}
-                        centerOnInit={true}
-                        limitToBounds={false}
-                        minScale={0.1}
-                        maxScale={5}
+
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase opacity-50">Componente Afectado</label>
+                      <select 
+                        className="w-full p-3 border border-[#141414] bg-white text-sm"
+                        value={newWO.part_id}
+                        onChange={e => setNewWO({ ...newWO, part_id: e.target.value })}
                       >
-                        {({ zoomIn, zoomOut, resetTransform }) => (
-                          <>
-                            <div className="absolute top-4 right-4 z-20 flex flex-col space-y-2">
-                              <button onClick={() => zoomIn()} className="p-2 bg-white border border-[#141414] hover:bg-gray-100 shadow-sm"><Plus className="w-4 h-4" /></button>
-                              <button onClick={() => zoomOut()} className="p-2 bg-white border border-[#141414] hover:bg-gray-100 shadow-sm"><X className="w-4 h-4 rotate-45" /></button>
-                              <button onClick={() => resetTransform()} className="p-2 bg-white border border-[#141414] hover:bg-gray-100 shadow-sm"><Undo className="w-4 h-4" /></button>
-                            </div>
-                            <TransformComponent
-                              wrapperStyle={{ width: "100%", height: "100%", cursor: "grab" }}
-                              contentStyle={{ 
-                                display: "flex", 
-                                justifyContent: "center", 
-                                alignItems: "center",
-                                width: "max-content",
-                                height: "max-content",
-                                minWidth: "100%",
-                                minHeight: "100%",
-                                padding: "150px"
-                              }}
-                            >
-                              <div className="relative">
-                                <TreeNode 
-                                  nodes={functionalTree} 
-                                  parentId={null} 
-                                  onNodeClick={(node) => {
-                                    setDiagnosticPath([...diagnosticPath, node]);
-                                    setDiagnosticStep(1);
-                                  }}
-                                />
-                              </div>
-                            </TransformComponent>
-                          </>
-                        )}
-                      </TransformWrapper>
+                        <option value="">Seleccionar Componente...</option>
+                        {functionalTree.map(node => (
+                          <option key={node.id} value={node.id}>{node.name}</option>
+                        ))}
+                      </select>
                     </div>
 
-                    {/* Interaction Panel */}
-                    <div className="w-full lg:w-80 p-6 flex flex-col bg-[#E4E3E0] overflow-y-auto">
-                      <h4 className="text-xs font-bold uppercase opacity-50 mb-4 tracking-widest">Ruta de Diagnóstico</h4>
-                      
-                      {diagnosticPath.length === 0 ? (
-                        <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
-                          <AlertTriangle className="w-8 h-8 mb-4 opacity-20" />
-                          <p className="text-xs italic opacity-50">Haga clic en un componente del árbol para iniciar el diagnóstico</p>
-                        </div>
-                      ) : (
-                        <div className="space-y-6 flex-1">
-                          <div className="space-y-2">
-                            {diagnosticPath.map((n, i) => (
-                              <div key={n.id} className="flex items-center">
-                                <div className="w-4 h-4 rounded-full bg-[#141414] text-[#E4E3E0] text-[8px] flex items-center justify-center mr-2">
-                                  {i + 1}
-                                </div>
-                                <span className="text-xs font-bold uppercase">{n.name}</span>
-                              </div>
-                            ))}
-                          </div>
-
-                          <div className="p-4 bg-white border border-[#141414] space-y-4">
-                            <p className="text-xs font-bold">¿Es este el componente con la falla?</p>
-                            <div className="grid grid-cols-1 gap-2">
-                              <button 
-                                onClick={async () => {
-                                  const woData = {
-                                    machine_id: selectedMachine.id,
-                                    part_id: diagnosticPath[diagnosticPath.length - 1].id,
-                                    type: 'corrective',
-                                    description: `ACCIÓN CORRECTIVA: Reparar falla detectada en ${diagnosticPath[diagnosticPath.length - 1].name}`,
-                                    diagnostic_notes: `Diagnóstico completado. Ruta: ${diagnosticPath.map(n => n.name).join(' > ')}`
-                                  };
-                                  await createWorkOrder(woData);
-                                  setDiagnosticStep(0);
-                                  setDiagnosticPath([]);
-                                  setShowDiagnosticModal(false);
-                                }}
-                                className="w-full bg-emerald-600 text-white py-3 text-[10px] font-bold uppercase hover:bg-emerald-700"
-                              >
-                                Sí, Confirmar Falla Aquí
-                              </button>
-                              <button 
-                                onClick={() => {
-                                  if (diagnosticPath.length > 1) {
-                                    setDiagnosticPath(diagnosticPath.slice(0, -1));
-                                  } else {
-                                    setDiagnosticPath([]);
-                                    setDiagnosticStep(0);
-                                  }
-                                }}
-                                className="w-full border border-[#141414] py-3 text-[10px] font-bold uppercase hover:bg-gray-100"
-                              >
-                                No, Volver Atrás
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="space-y-2">
-                            <p className="text-[10px] font-bold uppercase opacity-50">Explorar Sub-componentes:</p>
-                            <div className="grid grid-cols-1 gap-1">
-                              {functionalTree.filter(n => n.parent_id === diagnosticPath[diagnosticPath.length - 1].id).map(child => (
-                                <button 
-                                  key={child.id}
-                                  onClick={() => setDiagnosticPath([...diagnosticPath, child])}
-                                  className="w-full p-2 border border-[#141414] bg-white text-left text-[10px] font-bold uppercase hover:bg-gray-50"
-                                >
-                                  {child.name}
-                                </button>
-                              ))}
-                              {functionalTree.filter(n => n.parent_id === diagnosticPath[diagnosticPath.length - 1].id).length === 0 && (
-                                <p className="text-[10px] italic opacity-40">No hay más sub-componentes.</p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      )}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase opacity-50">Descripción de la Falla</label>
+                      <textarea 
+                        className="w-full p-3 border border-[#141414] bg-white text-sm h-24"
+                        placeholder="Describa el problema o síntoma..."
+                        value={newWO.description}
+                        onChange={e => setNewWO({ ...newWO, description: e.target.value })}
+                      />
                     </div>
-                  </div>
-                  <div className="p-6 border-t border-[#141414] flex justify-end">
-                    <button onClick={() => setShowDiagnosticModal(false)} className="text-xs font-bold uppercase hover:underline">Cerrar Diagnóstico</button>
+
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase opacity-50">Análisis de Causa Raíz (Opcional)</label>
+                      <textarea 
+                        className="w-full p-3 border border-[#141414] bg-white text-sm h-24"
+                        placeholder="Describa la causa raíz de la falla..."
+                        value={diagnosticRootCause}
+                        onChange={e => setDiagnosticRootCause(e.target.value)}
+                      />
+                    </div>
+
+                    <button 
+                      onClick={async () => {
+                        if (!newWO.part_id || !newWO.description) {
+                          showAlert("Por favor seleccione un componente y describa la falla.");
+                          return;
+                        }
+                        const woData = {
+                          machine_id: selectedMachine.id,
+                          part_id: parseInt(newWO.part_id),
+                          type: 'corrective',
+                          description: `ACCIÓN CORRECTIVA: ${newWO.description}`,
+                          diagnostic_notes: `Análisis de falla registrado.`,
+                          root_cause: diagnosticRootCause || null
+                        };
+                        await createWorkOrder(woData);
+                        setDiagnosticRootCause('');
+                        setNewWO({ machine_id: '', part_id: '', type: 'preventive', description: '', personnel_id: '', activities: [] });
+                        setShowFailureAnalysisModal(false);
+                      }}
+                      className="w-full py-4 bg-red-600 text-white font-bold uppercase tracking-widest hover:bg-red-700 transition-all"
+                    >
+                      Generar Orden Correctiva
+                    </button>
                   </div>
                 </div>
               </div>
@@ -2032,9 +1775,11 @@ export default function App() {
               <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-8 z-50">
                 <div className="bg-[#E4E3E0] border border-[#141414] w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
                   <h3 className="text-2xl font-serif italic mb-6">Nueva Orden de Trabajo</h3>
-                  <div className="space-y-4">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase opacity-50">Máquina</label>
+                  
+                  {!showAddPersonnelInNewWO ? (
+                    <div className="space-y-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase opacity-50">Máquina</label>
                       <select 
                         className="w-full p-2 border border-[#141414] bg-white text-sm"
                         value={newWO.machine_id}
@@ -2090,7 +1835,18 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase opacity-50">Responsable / Técnico</label>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="text-[10px] font-bold uppercase opacity-50">Responsable / Técnico</label>
+                        <button 
+                          onClick={() => {
+                            setNewPersonnelTarget({ type: 'main' });
+                            setShowAddPersonnelInNewWO(true);
+                          }}
+                          className="text-[9px] uppercase font-bold text-blue-600 hover:underline"
+                        >
+                          + Nuevo Responsable
+                        </button>
+                      </div>
                       <select 
                         className="w-full p-2 border border-[#141414] bg-white text-sm"
                         value={newWO.personnel_id}
@@ -2121,6 +1877,69 @@ export default function App() {
                       </div>
                     </div>
 
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase opacity-50">Actividades (Opcional)</label>
+                      {newWO.activities.map((activity, idx) => (
+                        <div key={activity.id} className="flex flex-col space-y-1 p-2 border border-[#141414] bg-white">
+                          <div className="flex items-center space-x-2">
+                            <input 
+                              type="text"
+                              className="flex-1 p-2 border border-[#141414] bg-white text-sm"
+                              placeholder={`Actividad ${idx + 1}`}
+                              value={activity.description}
+                              onChange={e => {
+                                const updated = [...newWO.activities];
+                                updated[idx].description = e.target.value;
+                                setNewWO({ ...newWO, activities: updated });
+                              }}
+                            />
+                            <button 
+                              onClick={() => {
+                                const updated = newWO.activities.filter((_, i) => i !== idx);
+                                setNewWO({ ...newWO, activities: updated });
+                              }}
+                              className="p-2 text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <select
+                              className="flex-1 p-2 border border-[#141414] bg-gray-50 text-xs"
+                              value={activity.personnel_id || ''}
+                              onChange={e => {
+                                const updated = [...newWO.activities];
+                                updated[idx].personnel_id = e.target.value ? Number(e.target.value) : null;
+                                setNewWO({ ...newWO, activities: updated });
+                              }}
+                            >
+                              <option value="">Sin responsable asignado...</option>
+                              {personnel.map(p => (
+                                <option key={p.id} value={p.id}>{p.name}</option>
+                              ))}
+                            </select>
+                            <button 
+                              onClick={() => {
+                                setNewPersonnelTarget({ type: 'activity', index: idx });
+                                setShowAddPersonnelInNewWO(true);
+                              }}
+                              className="text-[9px] uppercase font-bold text-blue-600 hover:underline whitespace-nowrap"
+                            >
+                              + Nuevo
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      <button 
+                        onClick={() => {
+                          setNewWO({ ...newWO, activities: [...newWO.activities, { id: Date.now(), description: '', is_completed: false }] });
+                        }}
+                        className="text-xs font-bold uppercase border border-[#141414] px-3 py-1 hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                      >
+                        + Agregar Actividad
+                      </button>
+                    </div>
+
                     <div className="flex space-x-2 pt-4">
                       <button onClick={() => {
                         setShowNewWOModal(false);
@@ -2135,6 +1954,124 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+                  ) : (
+                    <div className="p-4 border border-[#141414] bg-white space-y-4">
+                      <div className="flex justify-between items-center">
+                        <h4 className="text-xs font-bold uppercase">Nuevo Responsable</h4>
+                        <button 
+                          onClick={() => setShowAddPersonnelInNewWO(false)}
+                          className="text-[9px] uppercase font-bold opacity-50 hover:underline"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                      
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase opacity-50">Nombre Completo</label>
+                        <input 
+                          placeholder="Ej: Juan Pérez"
+                          className="w-full p-2 border border-[#141414] bg-white text-sm"
+                          value={newPersonnelInWO.name}
+                          onChange={e => setNewPersonnelInWO({ ...newPersonnelInWO, name: e.target.value })}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex justify-between items-center mb-1">
+                          <label className="text-[10px] font-bold uppercase opacity-50">Empresa</label>
+                          <button 
+                            onClick={() => setShowAddCompanyInWO(!showAddCompanyInWO)}
+                            className="text-[9px] uppercase font-bold text-blue-600 hover:underline"
+                          >
+                            + Nueva Empresa
+                          </button>
+                        </div>
+                        
+                        {!showAddCompanyInWO ? (
+                          <select 
+                            className="w-full p-2 border border-[#141414] bg-white text-sm"
+                            value={newPersonnelInWO.company_id}
+                            onChange={e => setNewPersonnelInWO({ ...newPersonnelInWO, company_id: e.target.value })}
+                          >
+                            <option value="">Seleccionar Empresa...</option>
+                            {companies.map(c => (
+                              <option key={c.id} value={c.id}>{c.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="flex gap-2">
+                            <input 
+                              placeholder="Nombre de la empresa"
+                              className="flex-1 p-2 border border-[#141414] bg-white text-sm"
+                              value={newCompanyInWO.name}
+                              onChange={e => setNewCompanyInWO({ name: e.target.value })}
+                            />
+                            <button 
+                              onClick={async () => {
+                                if (!newCompanyInWO.name) return;
+                                try {
+                                  const res = await fetch('/api/companies', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(newCompanyInWO)
+                                  });
+                                  if (!res.ok) throw new Error('Failed to add company');
+                                  const data = await res.json();
+                                  await fetchData();
+                                  setNewPersonnelInWO({ ...newPersonnelInWO, company_id: String(data.id) });
+                                  setShowAddCompanyInWO(false);
+                                  setNewCompanyInWO({ name: '' });
+                                } catch (err) {
+                                  console.error(err);
+                                  showAlert("Error al agregar empresa");
+                                }
+                              }}
+                              className="bg-[#141414] text-[#E4E3E0] px-3 text-xs font-bold uppercase"
+                            >
+                              Guardar
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <button 
+                        onClick={async () => {
+                          if (!newPersonnelInWO.name) return;
+                          try {
+                            const res = await fetch('/api/personnel', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                name: newPersonnelInWO.name,
+                                company_id: newPersonnelInWO.company_id ? Number(newPersonnelInWO.company_id) : null
+                              })
+                            });
+                            if (!res.ok) throw new Error('Failed to add personnel');
+                            const data = await res.json();
+                            await fetchData();
+                            
+                            if (newPersonnelTarget?.type === 'main') {
+                              setNewWO({...newWO, personnel_id: String(data.id)});
+                            } else if (newPersonnelTarget?.type === 'activity' && newPersonnelTarget.index !== undefined) {
+                              const updated = [...newWO.activities];
+                              updated[newPersonnelTarget.index].personnel_id = data.id;
+                              setNewWO({ ...newWO, activities: updated });
+                            }
+                            
+                            setShowAddPersonnelInNewWO(false);
+                            setNewPersonnelInWO({ name: '', company_id: '' });
+                            setNewPersonnelTarget(null);
+                          } catch (err) {
+                            console.error(err);
+                            showAlert("Error al agregar responsable");
+                          }
+                        }}
+                        className="w-full bg-[#141414] text-[#E4E3E0] p-2 text-xs font-bold uppercase"
+                      >
+                        Guardar Responsable
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2172,7 +2109,40 @@ export default function App() {
                       </td>
                       <td className="p-4">
                         <div>{wo.description}</div>
-                        {wo.diagnostic_notes && <div className="text-[10px] text-blue-600 mt-1 italic">{wo.diagnostic_notes}</div>}
+                        {wo.diagnostic_notes && <div className="text-[10px] text-blue-600 mt-1 italic">Diagnóstico: {wo.diagnostic_notes}</div>}
+                        {wo.root_cause && <div className="text-[10px] text-red-600 mt-1 italic font-bold">Causa Raíz: {wo.root_cause}</div>}
+                        {wo.activities && wo.activities.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-[10px] uppercase font-bold opacity-70 mb-1">
+                              Actividades: {wo.activities.filter(a => a.is_completed).length} / {wo.activities.length} completadas
+                            </div>
+                            <ul className="space-y-1">
+                              {wo.activities.map((a: any, idx: number) => (
+                                <li key={a.id} className="flex items-center space-x-2 text-xs">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={a.is_completed} 
+                                    onChange={(e) => {
+                                      if (wo.status === 'in_progress') {
+                                        toggleActivityCompletion(wo, idx, e.target.checked);
+                                      }
+                                    }}
+                                    disabled={wo.status !== 'in_progress'}
+                                    className="w-3 h-3 accent-[#141414]"
+                                  />
+                                  <span className={cn(a.is_completed && "line-through opacity-50")}>
+                                    {a.description}
+                                  </span>
+                                  {a.personnel_id && (
+                                    <span className="text-[9px] bg-gray-200 px-1 rounded">
+                                      {personnel.find(p => p.id === a.personnel_id)?.name}
+                                    </span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       </td>
                       <td className="p-4">
                         <span className="text-[10px] uppercase font-bold opacity-50">{wo.type}</span>
@@ -2623,6 +2593,59 @@ export default function App() {
                                       </div>
                                     )}
                                     {rec.description && <p className="text-[9px] italic mt-2 border-t border-gray-200 pt-1 opacity-50">{rec.description}</p>}
+                                    <div className="mt-2 pt-2 border-t border-gray-200 flex items-center justify-between">
+                                      {rec.document_url ? (
+                                        <a 
+                                          href={rec.document_url} 
+                                          target="_blank" 
+                                          rel="noopener noreferrer"
+                                          className="text-[9px] font-bold uppercase text-blue-600 hover:underline flex items-center"
+                                        >
+                                          <Book className="w-3 h-3 mr-1" /> Ver Doc
+                                        </a>
+                                      ) : (
+                                        <span className="text-[9px] italic opacity-40">Sin doc.</span>
+                                      )}
+                                      <label className="cursor-pointer text-[9px] font-bold uppercase border border-[#141414] px-2 py-1 hover:bg-gray-100">
+                                        Subir
+                                        <input 
+                                          type="file" 
+                                          accept=".pdf,.doc,.docx,image/*"
+                                          className="hidden" 
+                                          onChange={async (e) => {
+                                            const file = e.target.files?.[0];
+                                            if (file) {
+                                              if (file.size > MAX_FILE_SIZE) {
+                                                showAlert("El archivo es demasiado grande. El tamaño máximo permitido es 10MB.");
+                                                return;
+                                              }
+                                              const reader = new FileReader();
+                                              reader.onloadend = async () => {
+                                                const base64String = reader.result as string;
+                                                try {
+                                                  const res = await fetch(`/api/manufacturer-recommendations/${rec.id}`, {
+                                                    method: 'PATCH',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ document_url: base64String })
+                                                  });
+                                                  if (!res.ok) {
+                                                    if (res.status === 413) {
+                                                      throw new Error("El archivo es demasiado grande para ser procesado por el servidor.");
+                                                    }
+                                                    throw new Error(`Error HTTP: ${res.status}`);
+                                                  }
+                                                  fetchData();
+                                                } catch (err: any) {
+                                                  console.error(err);
+                                                  showAlert(`Error al subir el documento: ${err.message}`);
+                                                }
+                                              };
+                                              reader.readAsDataURL(file);
+                                            }
+                                          }} 
+                                        />
+                                      </label>
+                                    </div>
                                   </div>
                                 ))
                               )}
@@ -2859,7 +2882,7 @@ export default function App() {
                           type="number"
                           className="w-full p-2 border border-[#141414] bg-white text-sm"
                           value={editedTask?.frequency_days || ''}
-                          onChange={e => setEditedTask(prev => prev ? {...prev, frequency_days: e.target.value, frequency_hours: ''} : null)}
+                          onChange={e => setEditedTask(prev => prev ? {...prev, frequency_days: e.target.value ? Number(e.target.value) : null, frequency_hours: null} : null)}
                         />
                       </div>
                       <div>
@@ -2868,10 +2891,50 @@ export default function App() {
                           type="number"
                           className="w-full p-2 border border-[#141414] bg-white text-sm"
                           value={editedTask?.frequency_hours || ''}
-                          onChange={e => setEditedTask(prev => prev ? {...prev, frequency_hours: e.target.value, frequency_days: ''} : null)}
+                          onChange={e => setEditedTask(prev => prev ? {...prev, frequency_hours: e.target.value ? Number(e.target.value) : null, frequency_days: null} : null)}
                         />
                       </div>
                     </div>
+
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase opacity-50">Actividades</label>
+                      {(editedTask?.activities || []).map((activity, idx) => (
+                        <div key={activity.id || idx} className="flex items-center space-x-2">
+                          <input 
+                            type="text"
+                            className="flex-1 p-2 border border-[#141414] bg-white text-sm"
+                            placeholder={`Actividad ${idx + 1}`}
+                            value={activity.description}
+                            onChange={e => {
+                              if (!editedTask) return;
+                              const updated = [...(editedTask.activities || [])];
+                              updated[idx].description = e.target.value;
+                              setEditedTask({ ...editedTask, activities: updated });
+                            }}
+                          />
+                          <button 
+                            onClick={() => {
+                              if (!editedTask) return;
+                              const updated = (editedTask.activities || []).filter((_, i) => i !== idx);
+                              setEditedTask({ ...editedTask, activities: updated });
+                            }}
+                            className="p-2 text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                      <button 
+                        onClick={() => {
+                          if (!editedTask) return;
+                          setEditedTask({ ...editedTask, activities: [...(editedTask.activities || []), { id: Date.now(), description: '', is_completed: false }] });
+                        }}
+                        className="text-xs font-bold uppercase border border-[#141414] px-3 py-1 hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                      >
+                        + Agregar Actividad
+                      </button>
+                    </div>
+
                   </div>
                 )}
 
@@ -2962,6 +3025,25 @@ export default function App() {
                         onChange={e => setStartWODiagnostic(e.target.value)}
                       />
                     </div>
+
+                    {woToStart && workOrders.find(w => w.id === woToStart)?.activities?.length > 0 && (
+                      <div className="space-y-1 mt-4">
+                        <label className="text-[10px] font-bold uppercase opacity-50">Actividades Programadas</label>
+                        <ul className="space-y-1 bg-white p-2 border border-[#141414]">
+                          {workOrders.find(w => w.id === woToStart)?.activities?.map(a => (
+                            <li key={a.id} className="flex items-center space-x-2 text-xs">
+                              <span className="w-1.5 h-1.5 bg-[#141414] rounded-full"></span>
+                              <span>{a.description}</span>
+                              {a.personnel_id && (
+                                <span className="text-[9px] bg-gray-200 px-1 rounded">
+                                  {personnel.find(p => p.id === a.personnel_id)?.name}
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="p-4 border border-[#141414] bg-white space-y-4">
@@ -3119,6 +3201,56 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase opacity-50">Análisis de Causa Raíz</label>
+                  <textarea 
+                    className="w-full p-2 border border-[#141414] bg-white text-sm h-24"
+                    value={editingWO.root_cause || ''}
+                    onChange={e => setEditingWO({ ...editingWO, root_cause: e.target.value })}
+                  />
+                </div>
+
+                {editingWO.activities && editingWO.activities.length > 0 && (
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold uppercase opacity-50">Actividades</label>
+                    <div className="space-y-2">
+                      {editingWO.activities.map((activity: any, idx: number) => (
+                        <div key={activity.id || idx} className="flex flex-col space-y-2 p-2 border border-[#141414] bg-white">
+                          <div className="flex items-center space-x-3">
+                            <input 
+                              type="checkbox"
+                              checked={activity.is_completed}
+                              onChange={e => {
+                                const updated = [...editingWO.activities];
+                                updated[idx].is_completed = e.target.checked;
+                                setEditingWO({ ...editingWO, activities: updated });
+                              }}
+                              className="w-4 h-4 accent-[#141414]"
+                            />
+                            <span className={cn("text-sm flex-1", activity.is_completed && "line-through opacity-50")}>
+                              {activity.description}
+                            </span>
+                          </div>
+                          <select
+                            className="w-full p-2 border border-[#141414] bg-gray-50 text-xs"
+                            value={activity.personnel_id || ''}
+                            onChange={e => {
+                              const updated = [...editingWO.activities];
+                              updated[idx].personnel_id = e.target.value ? Number(e.target.value) : null;
+                              setEditingWO({ ...editingWO, activities: updated });
+                            }}
+                          >
+                            <option value="">Sin responsable asignado...</option>
+                            {personnel.map(p => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex space-x-4 pt-4">
                   <button 
                     onClick={() => setShowEditWOModal(false)}
@@ -3746,6 +3878,39 @@ export default function App() {
                     value={newRecommendation.description}
                     onChange={e => setNewRecommendation({ ...newRecommendation, description: e.target.value })}
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase opacity-50">Documento Adjunto</label>
+                  <div className="flex items-center space-x-4">
+                    <label className="cursor-pointer text-xs font-bold uppercase border border-[#141414] px-4 py-2 hover:bg-gray-100">
+                      {newRecommendation.document_url ? 'Cambiar Documento' : 'Subir Documento'}
+                      <input 
+                        type="file" 
+                        accept=".pdf,.doc,.docx,image/*"
+                        className="hidden" 
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            if (file.size > MAX_FILE_SIZE) {
+                              showAlert("El archivo es demasiado grande. El tamaño máximo permitido es 10MB.");
+                              return;
+                            }
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              setNewRecommendation({ ...newRecommendation, document_url: reader.result as string });
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }} 
+                      />
+                    </label>
+                    {newRecommendation.document_url && (
+                      <span className="text-xs text-emerald-600 font-bold flex items-center">
+                        <CheckCircle2 className="w-4 h-4 mr-1" /> Documento adjunto
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <button 

@@ -6,6 +6,8 @@ export interface Machine {
   last_maintenance: string | null;
   description: string;
   avg_daily_hours: number;
+  functional_tree_image_url?: string | null;
+  has_document?: boolean | number;
 }
 
 export interface Company {
@@ -50,6 +52,14 @@ export interface MaintenanceSchedule {
   last_done: string | null;
   next_due: string;
   description: string;
+  activities?: WorkOrderActivity[];
+}
+
+export interface WorkOrderActivity {
+  id: number;
+  description: string;
+  is_completed: boolean;
+  personnel_id?: number | null;
 }
 
 export interface WorkOrder {
@@ -69,6 +79,8 @@ export interface WorkOrder {
   personnel_id: number | null;
   schedule_id: number | null;
   diagnostic_notes: string | null;
+  root_cause?: string | null;
+  activities?: WorkOrderActivity[];
 }
 
 export interface InventoryItem {
@@ -121,6 +133,7 @@ export interface ManufacturerRecommendation {
   frequency_days: number | null;
   part_number: string | null;
   description: string | null;
+  document_url?: string | null;
 }
 
 export interface KPI {

@@ -113,6 +113,7 @@ db.exec(`
     frequency_days INTEGER,
     part_number TEXT,
     description TEXT,
+    document_url TEXT,
     FOREIGN KEY(machine_id) REFERENCES machines(id)
   );
 
@@ -166,6 +167,9 @@ addColumnIfNotExists("work_orders", "duration_minutes", "INTEGER");
 addColumnIfNotExists("work_orders", "technician", "TEXT");
 addColumnIfNotExists("work_orders", "cost", "REAL DEFAULT 0");
 addColumnIfNotExists("work_orders", "personnel_id", "INTEGER REFERENCES personnel(id)");
+addColumnIfNotExists("work_orders", "root_cause", "TEXT");
+addColumnIfNotExists("work_orders", "activities", "TEXT DEFAULT '[]'");
+addColumnIfNotExists("maintenance_schedules", "activities", "TEXT DEFAULT '[]'");
 
 addColumnIfNotExists("functional_tree", "part_number", "TEXT");
 addColumnIfNotExists("functional_tree", "supplier", "TEXT");
@@ -184,6 +188,8 @@ addColumnIfNotExists("inventory", "entry_date", "DATETIME DEFAULT CURRENT_TIMEST
 addColumnIfNotExists("inventory", "unit_price", "REAL");
 addColumnIfNotExists("maintenance_schedules", "start_date", "DATETIME");
 addColumnIfNotExists("machines", "avg_daily_hours", "REAL DEFAULT 8.0");
+addColumnIfNotExists("machines", "functional_tree_image_url", "TEXT");
+addColumnIfNotExists("manufacturer_recommendations", "document_url", "TEXT");
 
 // Migration for work_orders CHECK constraint
 const workOrdersSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_orders'").get() as { sql: string };
@@ -257,20 +263,53 @@ db.prepare("DELETE FROM machines WHERE name = 'Prensa Hidráulica'").run();
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ limit: '100mb', extended: true }));
   const PORT = 3000;
 
   // API Routes
   app.get("/api/machines", (req, res) => {
-    const machines = db.prepare("SELECT * FROM machines").all();
+    // Exclude functional_tree_image_url to prevent massive payloads
+    const machines = db.prepare("SELECT id, name, type, status, last_maintenance, description, avg_daily_hours, CASE WHEN functional_tree_image_url IS NOT NULL THEN 1 ELSE 0 END as has_document FROM machines").all();
     res.json(machines);
   });
 
+  app.get("/api/machines/:id/document", (req, res) => {
+    const machine = db.prepare("SELECT functional_tree_image_url FROM machines WHERE id = ?").get(req.params.id) as any;
+    if (!machine) return res.status(404).json({ error: "Machine not found" });
+    res.json({ functional_tree_image_url: machine.functional_tree_image_url });
+  });
+
   app.post("/api/machines", (req, res) => {
-    const { name, type, description } = req.body;
-    const info = db.prepare("INSERT INTO machines (name, type, description) VALUES (?, ?, ?)")
-      .run(name, type, description || null);
+    const { name, type, description, functional_tree_image_url } = req.body;
+    const info = db.prepare("INSERT INTO machines (name, type, description, functional_tree_image_url) VALUES (?, ?, ?, ?)")
+      .run(name, type, description || null, functional_tree_image_url || null);
     res.json({ id: info.lastInsertRowid });
+  });
+
+  app.patch("/api/machines/:id", (req, res) => {
+    try {
+      const { name, type, description, functional_tree_image_url } = req.body;
+      
+      // Get existing machine to handle partial updates
+      const existing = db.prepare("SELECT * FROM machines WHERE id = ?").get(req.params.id) as any;
+      if (!existing) {
+        return res.status(404).json({ error: "Machine not found" });
+      }
+
+      db.prepare("UPDATE machines SET name = ?, type = ?, description = ?, functional_tree_image_url = ? WHERE id = ?")
+        .run(
+          name !== undefined ? name : existing.name, 
+          type !== undefined ? type : existing.type, 
+          description !== undefined ? description : existing.description, 
+          functional_tree_image_url !== undefined ? functional_tree_image_url : existing.functional_tree_image_url, 
+          req.params.id
+        );
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error updating machine:", err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.delete("/api/machines/:id", (req, res) => {
@@ -350,12 +389,15 @@ async function startServer() {
       LEFT JOIN functional_tree ft ON ms.part_id = ft.id
       LEFT JOIN personnel p ON ms.personnel_id = p.id
       LEFT JOIN companies c ON p.company_id = c.id
-    `).all();
+    `).all().map((s: any) => ({
+      ...s,
+      activities: JSON.parse(s.activities || '[]')
+    }));
     res.json(schedules);
   });
 
   app.post("/api/schedules", (req, res) => {
-    const { machine_id, part_id, task_name, frequency_days, frequency_hours, personnel_id, required_items, next_due, start_date, description } = req.body;
+    const { machine_id, part_id, task_name, frequency_days, frequency_hours, personnel_id, required_items, next_due, start_date, description, activities } = req.body;
     let final_next_due = next_due;
     
     if (!final_next_due) {
@@ -380,12 +422,20 @@ async function startServer() {
         const month = String(d.getMonth() + 1).padStart(2, '0');
         const day = String(d.getDate()).padStart(2, '0');
         final_next_due = `${year}-${month}-${day}`;
+      } else {
+        const d = new Date(baseDate);
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        final_next_due = `${year}-${month}-${day}`;
       }
     }
     
+    const activitiesJson = activities ? JSON.stringify(activities) : '[]';
+
     const info = db.prepare(`
-      INSERT INTO maintenance_schedules (machine_id, part_id, task_name, frequency_days, frequency_hours, personnel_id, required_items, start_date, next_due, description)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO maintenance_schedules (machine_id, part_id, task_name, frequency_days, frequency_hours, personnel_id, required_items, start_date, next_due, description, activities)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       machine_id || null, 
       part_id || null, 
@@ -396,7 +446,8 @@ async function startServer() {
       required_items || null, 
       start_date || null,
       final_next_due, 
-      description
+      description,
+      activitiesJson
     );
     res.json({ id: info.lastInsertRowid });
   });
@@ -450,29 +501,74 @@ async function startServer() {
       LEFT JOIN machines m ON wo.machine_id = m.id
       LEFT JOIN functional_tree ft ON wo.part_id = ft.id
       ORDER BY wo.created_at DESC
-    `).all();
+    `).all().map((wo: any) => ({
+      ...wo,
+      activities: JSON.parse(wo.activities || '[]')
+    }));
     res.json(orders);
   });
 
   app.post("/api/work-orders", (req, res) => {
-    const { machine_id, part_id, schedule_id, description, type, diagnostic_notes } = req.body;
+    const { machine_id, part_id, schedule_id, personnel_id, description, type, diagnostic_notes, activities } = req.body;
     const mId = machine_id ? Number(machine_id) : null;
     const pId = part_id ? Number(part_id) : null;
     const sId = schedule_id ? Number(schedule_id) : null;
+    const persId = personnel_id ? Number(personnel_id) : null;
+    const activitiesJson = activities ? JSON.stringify(activities) : '[]';
     
-    const info = db.prepare("INSERT INTO work_orders (machine_id, part_id, schedule_id, description, type, diagnostic_notes) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(mId, pId, sId, description, type, diagnostic_notes || null);
+    const info = db.prepare("INSERT INTO work_orders (machine_id, part_id, schedule_id, personnel_id, description, type, diagnostic_notes, activities) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(mId, pId, sId, persId, description, type, diagnostic_notes || null, activitiesJson);
     res.json({ id: info.lastInsertRowid });
   });
 
+  app.patch("/api/work-orders/:id", (req, res) => {
+    const { root_cause, diagnostic_notes, description, type, activities, personnel_id } = req.body;
+    
+    // Build dynamic update query
+    const updates = [];
+    const values = [];
+    
+    if (root_cause !== undefined) {
+      updates.push("root_cause = ?");
+      values.push(root_cause);
+    }
+    if (diagnostic_notes !== undefined) {
+      updates.push("diagnostic_notes = ?");
+      values.push(diagnostic_notes);
+    }
+    if (description !== undefined) {
+      updates.push("description = ?");
+      values.push(description);
+    }
+    if (type !== undefined) {
+      updates.push("type = ?");
+      values.push(type);
+    }
+    if (activities !== undefined) {
+      updates.push("activities = ?");
+      values.push(JSON.stringify(activities));
+    }
+    if (personnel_id !== undefined) {
+      updates.push("personnel_id = ?");
+      values.push(personnel_id ? Number(personnel_id) : null);
+    }
+    
+    if (updates.length > 0) {
+      values.push(req.params.id);
+      db.prepare(`UPDATE work_orders SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    }
+    
+    res.json({ success: true });
+  });
+
   app.patch("/api/work-orders/:id/start", (req, res) => {
-    const { personnel_id } = req.body;
+    const { personnel_id, diagnostic_notes } = req.body;
     const order = db.prepare("SELECT machine_id FROM work_orders WHERE id = ?").get(req.params.id) as { machine_id: number } | undefined;
     if (!order) return res.status(404).json({ error: "Work order not found" });
     
     db.transaction(() => {
-      db.prepare("UPDATE work_orders SET started_at = CURRENT_TIMESTAMP, status = 'in_progress', personnel_id = ? WHERE id = ?")
-        .run(personnel_id || null, req.params.id);
+      db.prepare("UPDATE work_orders SET started_at = CURRENT_TIMESTAMP, status = 'in_progress', personnel_id = ?, diagnostic_notes = ? WHERE id = ?")
+        .run(personnel_id || null, diagnostic_notes || null, req.params.id);
       if (order.machine_id) {
         db.prepare("UPDATE machines SET status = 'maintenance' WHERE id = ?").run(order.machine_id);
       }
@@ -513,16 +609,21 @@ async function startServer() {
   });
 
   app.delete("/api/schedules/:id", (req, res) => {
-    db.prepare("DELETE FROM maintenance_schedules WHERE id = ?").run(req.params.id);
+    const id = req.params.id;
+    db.prepare("UPDATE work_orders SET schedule_id = NULL WHERE schedule_id = ?").run(id);
+    db.prepare("DELETE FROM maintenance_schedules WHERE id = ?").run(id);
     res.json({ success: true });
   });
 
   app.patch("/api/schedules/:id", (req, res) => {
-    const { machine_id, part_id, task_name, frequency_days, frequency_hours, personnel_id, required_items, start_date, last_done, next_due, description } = req.body;
+    const { machine_id, part_id, task_name, frequency_days, frequency_hours, personnel_id, required_items, start_date, last_done, next_due, description, activities } = req.body;
+    
+    const activitiesJson = activities ? JSON.stringify(activities) : '[]';
+
     db.prepare(`
       UPDATE maintenance_schedules 
       SET machine_id = ?, part_id = ?, task_name = ?, frequency_days = ?, frequency_hours = ?, 
-          personnel_id = ?, required_items = ?, start_date = ?, last_done = ?, next_due = ?, description = ?
+          personnel_id = ?, required_items = ?, start_date = ?, last_done = ?, next_due = ?, description = ?, activities = ?
       WHERE id = ?
     `).run(
       machine_id || null, 
@@ -536,6 +637,7 @@ async function startServer() {
       last_done || null,
       next_due || null,
       description || null,
+      activitiesJson,
       req.params.id
     );
     res.json({ success: true });
@@ -781,13 +883,19 @@ async function startServer() {
   });
 
   app.post("/api/manufacturer-recommendations", (req, res) => {
-    const { machine_id, type, item_name, specification, frequency_hours, frequency_days, part_number, description } = req.body;
+    const { machine_id, type, item_name, specification, frequency_hours, frequency_days, part_number, description, document_url } = req.body;
     const info = db.prepare(`
       INSERT INTO manufacturer_recommendations 
-      (machine_id, type, item_name, specification, frequency_hours, frequency_days, part_number, description) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(machine_id, type, item_name, specification || null, frequency_hours || null, frequency_days || null, part_number || null, description || null);
+      (machine_id, type, item_name, specification, frequency_hours, frequency_days, part_number, description, document_url) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(machine_id, type, item_name, specification || null, frequency_hours || null, frequency_days || null, part_number || null, description || null, document_url || null);
     res.json({ id: info.lastInsertRowid });
+  });
+
+  app.patch("/api/manufacturer-recommendations/:id", (req, res) => {
+    const { document_url } = req.body;
+    db.prepare("UPDATE manufacturer_recommendations SET document_url = ? WHERE id = ?").run(document_url || null, req.params.id);
+    res.json({ success: true });
   });
 
   app.delete("/api/manufacturer-recommendations/:id", (req, res) => {
@@ -798,7 +906,8 @@ async function startServer() {
   // Global error handler for API routes
   app.use("/api", (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error(err);
-    res.status(500).json({ error: err.message || "Internal Server Error" });
+    const status = err.status || 500;
+    res.status(status).json({ error: err.message || "Internal Server Error" });
   });
 
   // Vite middleware for development
