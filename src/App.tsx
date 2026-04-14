@@ -372,6 +372,7 @@ export default function App() {
   const [woToStart, setWOToStart] = useState<number | null>(null);
   const [startWOPersonnelId, setStartWOPersonnelId] = useState('');
   const [startWODiagnostic, setStartWODiagnostic] = useState('');
+  const [startWOActivities, setStartWOActivities] = useState<any[]>([]);
   const [showAddPersonnelInWO, setShowAddPersonnelInWO] = useState(false);
   const [showAddPersonnelInNewWO, setShowAddPersonnelInNewWO] = useState(false);
   const [newPersonnelTarget, setNewPersonnelTarget] = useState<{type: 'main' | 'activity', index?: number} | null>(null);
@@ -970,6 +971,7 @@ export default function App() {
     setWOToStart(id);
     setStartWOPersonnelId(wo?.personnel_id ? String(wo.personnel_id) : '');
     setStartWODiagnostic(wo?.diagnostic_notes || '');
+    setStartWOActivities(wo?.activities ? [...wo.activities] : []);
     setShowStartWOModal(true);
   };
 
@@ -981,7 +983,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           personnel_id: Number(startWOPersonnelId),
-          diagnostic_notes: startWODiagnostic
+          diagnostic_notes: startWODiagnostic,
+          activities: startWOActivities
         })
       });
       if (!res.ok) throw new Error(`Start work order failed: ${res.status}`);
@@ -1033,6 +1036,11 @@ export default function App() {
       const allCompleted = wo.activities.every(a => a.is_completed);
       if (!allCompleted) {
         showAlert("No se puede finalizar la orden de trabajo porque hay actividades pendientes.");
+        return;
+      }
+      const allAssigned = wo.activities.every(a => a.personnel_id);
+      if (!allAssigned) {
+        showAlert("No se puede finalizar la orden de trabajo porque hay actividades sin responsable asignado.");
         return;
       }
     }
@@ -1660,20 +1668,6 @@ export default function App() {
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
-                          <select
-                            className="w-full p-2 border border-[#141414] bg-gray-50 text-xs"
-                            value={activity.personnel_id || ''}
-                            onChange={e => {
-                              const updated = [...newSchedule.activities];
-                              updated[idx].personnel_id = e.target.value ? Number(e.target.value) : null;
-                              setNewSchedule({ ...newSchedule, activities: updated });
-                            }}
-                          >
-                            <option value="">Sin responsable asignado...</option>
-                            {personnel.map(p => (
-                              <option key={p.id} value={p.id}>{p.name}</option>
-                            ))}
-                          </select>
                         </div>
                       ))}
                       <button 
@@ -1903,31 +1897,6 @@ export default function App() {
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
-                          <div className="flex items-center space-x-2">
-                            <select
-                              className="flex-1 p-2 border border-[#141414] bg-gray-50 text-xs"
-                              value={activity.personnel_id || ''}
-                              onChange={e => {
-                                const updated = [...newWO.activities];
-                                updated[idx].personnel_id = e.target.value ? Number(e.target.value) : null;
-                                setNewWO({ ...newWO, activities: updated });
-                              }}
-                            >
-                              <option value="">Sin responsable asignado...</option>
-                              {personnel.map(p => (
-                                <option key={p.id} value={p.id}>{p.name}</option>
-                              ))}
-                            </select>
-                            <button 
-                              onClick={() => {
-                                setNewPersonnelTarget({ type: 'activity', index: idx });
-                                setShowAddPersonnelInNewWO(true);
-                              }}
-                              className="text-[9px] uppercase font-bold text-blue-600 hover:underline whitespace-nowrap"
-                            >
-                              + Nuevo
-                            </button>
-                          </div>
                         </div>
                       ))}
                       <button 
@@ -2052,10 +2021,6 @@ export default function App() {
                             
                             if (newPersonnelTarget?.type === 'main') {
                               setNewWO({...newWO, personnel_id: String(data.id)});
-                            } else if (newPersonnelTarget?.type === 'activity' && newPersonnelTarget.index !== undefined) {
-                              const updated = [...newWO.activities];
-                              updated[newPersonnelTarget.index].personnel_id = data.id;
-                              setNewWO({ ...newWO, activities: updated });
                             }
                             
                             setShowAddPersonnelInNewWO(false);
@@ -2998,7 +2963,10 @@ export default function App() {
                       <div className="flex justify-between items-center mb-1">
                         <label className="text-[10px] font-bold uppercase opacity-50">Asignar Responsable / Técnico</label>
                         <button 
-                          onClick={() => setShowAddPersonnelInWO(true)}
+                          onClick={() => {
+                            setNewPersonnelTarget({ type: 'main' });
+                            setShowAddPersonnelInWO(true);
+                          }}
                           className="text-[9px] uppercase font-bold text-blue-600 hover:underline"
                         >
                           + Nuevo Responsable
@@ -3026,22 +2994,44 @@ export default function App() {
                       />
                     </div>
 
-                    {woToStart && workOrders.find(w => w.id === woToStart)?.activities?.length > 0 && (
+                    {woToStart && startWOActivities.length > 0 && (
                       <div className="space-y-1 mt-4">
                         <label className="text-[10px] font-bold uppercase opacity-50">Actividades Programadas</label>
-                        <ul className="space-y-1 bg-white p-2 border border-[#141414]">
-                          {workOrders.find(w => w.id === woToStart)?.activities?.map(a => (
-                            <li key={a.id} className="flex items-center space-x-2 text-xs">
-                              <span className="w-1.5 h-1.5 bg-[#141414] rounded-full"></span>
-                              <span>{a.description}</span>
-                              {a.personnel_id && (
-                                <span className="text-[9px] bg-gray-200 px-1 rounded">
-                                  {personnel.find(p => p.id === a.personnel_id)?.name}
-                                </span>
-                              )}
-                            </li>
+                        <div className="space-y-2">
+                          {startWOActivities.map((a, idx) => (
+                            <div key={a.id} className="flex flex-col space-y-1 p-2 border border-[#141414] bg-white">
+                              <div className="flex items-center space-x-2 text-xs">
+                                <span className="w-1.5 h-1.5 bg-[#141414] rounded-full"></span>
+                                <span>{a.description}</span>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <select
+                                  className="flex-1 p-2 border border-[#141414] bg-gray-50 text-xs"
+                                  value={a.personnel_id || ''}
+                                  onChange={e => {
+                                    const updated = [...startWOActivities];
+                                    updated[idx].personnel_id = e.target.value ? Number(e.target.value) : null;
+                                    setStartWOActivities(updated);
+                                  }}
+                                >
+                                  <option value="">Sin responsable asignado...</option>
+                                  {personnel.map(p => (
+                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                  ))}
+                                </select>
+                                <button 
+                                  onClick={() => {
+                                    setNewPersonnelTarget({ type: 'activity', index: idx });
+                                    setShowAddPersonnelInWO(true);
+                                  }}
+                                  className="text-[10px] uppercase font-bold border border-[#141414] px-2 py-2 hover:bg-[#141414] hover:text-white transition-colors whitespace-nowrap"
+                                >
+                                  + Nuevo
+                                </button>
+                              </div>
+                            </div>
                           ))}
-                        </ul>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -3128,11 +3118,20 @@ export default function App() {
                           if (pRes.ok) {
                             const pData = await pRes.json();
                             await fetchData();
-                            setStartWOPersonnelId(pData.id.toString());
+                            
+                            if (newPersonnelTarget?.type === 'main') {
+                              setStartWOPersonnelId(pData.id.toString());
+                            } else if (newPersonnelTarget?.type === 'activity' && newPersonnelTarget.index !== undefined) {
+                              const updated = [...startWOActivities];
+                              updated[newPersonnelTarget.index].personnel_id = pData.id;
+                              setStartWOActivities(updated);
+                            }
+                            
                             setShowAddPersonnelInWO(false);
                             setNewPersonnelInWO({ name: '', company_id: '' });
                             setShowAddCompanyInWO(false);
                             setNewCompanyInWO({ name: '' });
+                            setNewPersonnelTarget(null);
                           }
                         } catch (err) { console.error(err); }
                       }}
@@ -3169,7 +3168,9 @@ export default function App() {
             <div className="bg-[#E4E3E0] border border-[#141414] w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
               <h3 className="text-2xl font-serif italic mb-6">Editar Orden de Trabajo</h3>
               <div className="space-y-4">
-                <div className="space-y-1">
+                {!showAddPersonnelInWO ? (
+                  <div className="space-y-4">
+                    <div className="space-y-1">
                   <label className="text-[10px] font-bold uppercase opacity-50">Descripción</label>
                   <div className="flex gap-2">
                     <textarea 
@@ -3231,20 +3232,31 @@ export default function App() {
                               {activity.description}
                             </span>
                           </div>
-                          <select
-                            className="w-full p-2 border border-[#141414] bg-gray-50 text-xs"
-                            value={activity.personnel_id || ''}
-                            onChange={e => {
-                              const updated = [...editingWO.activities];
-                              updated[idx].personnel_id = e.target.value ? Number(e.target.value) : null;
-                              setEditingWO({ ...editingWO, activities: updated });
-                            }}
-                          >
-                            <option value="">Sin responsable asignado...</option>
-                            {personnel.map(p => (
-                              <option key={p.id} value={p.id}>{p.name}</option>
-                            ))}
-                          </select>
+                          <div className="flex items-center space-x-2">
+                            <select
+                              className="flex-1 p-2 border border-[#141414] bg-gray-50 text-xs"
+                              value={activity.personnel_id || ''}
+                              onChange={e => {
+                                const updated = [...editingWO.activities];
+                                updated[idx].personnel_id = e.target.value ? Number(e.target.value) : null;
+                                setEditingWO({ ...editingWO, activities: updated });
+                              }}
+                            >
+                              <option value="">Sin responsable asignado...</option>
+                              {personnel.map(p => (
+                                <option key={p.id} value={p.id}>{p.name}</option>
+                              ))}
+                            </select>
+                            <button 
+                              onClick={() => {
+                                setNewPersonnelTarget({ type: 'activity', index: idx });
+                                setShowAddPersonnelInWO(true);
+                              }}
+                              className="text-[10px] uppercase font-bold border border-[#141414] px-2 py-2 hover:bg-[#141414] hover:text-white transition-colors whitespace-nowrap"
+                            >
+                              + Nuevo
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -3265,6 +3277,111 @@ export default function App() {
                     Guardar Cambios
                   </button>
                 </div>
+                  </div>
+                ) : (
+                  <div className="p-4 border border-[#141414] bg-white space-y-4">
+                    <div className="flex justify-between items-center">
+                      <h4 className="text-xs font-bold uppercase">Nuevo Responsable</h4>
+                      <button 
+                        onClick={() => setShowAddPersonnelInWO(false)}
+                        className="text-[9px] uppercase font-bold opacity-50 hover:underline"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                    
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase opacity-50">Nombre Completo</label>
+                      <input 
+                        placeholder="Ej: Juan Pérez"
+                        className="w-full p-2 border border-[#141414] bg-white text-sm"
+                        value={newPersonnelInWO.name}
+                        onChange={e => setNewPersonnelInWO({ ...newPersonnelInWO, name: e.target.value })}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="text-[10px] font-bold uppercase opacity-50">Empresa</label>
+                        <button 
+                          onClick={() => setShowAddCompanyInWO(!showAddCompanyInWO)}
+                          className="text-[9px] uppercase font-bold text-blue-600 hover:underline"
+                        >
+                          {showAddCompanyInWO ? '← Seleccionar' : '+ Nueva Empresa'}
+                        </button>
+                      </div>
+                      
+                      {showAddCompanyInWO ? (
+                        <div className="flex space-x-2">
+                          <input 
+                            placeholder="Nombre de la empresa"
+                            className="flex-1 p-2 border border-[#141414] bg-white text-sm"
+                            value={newCompanyInWO.name}
+                            onChange={e => setNewCompanyInWO({ name: e.target.value })}
+                          />
+                        </div>
+                      ) : (
+                        <select 
+                          className="w-full p-2 border border-[#141414] bg-white text-sm"
+                          value={newPersonnelInWO.company_id}
+                          onChange={e => setNewPersonnelInWO({ ...newPersonnelInWO, company_id: e.target.value })}
+                        >
+                          <option value="">Seleccionar Empresa...</option>
+                          {companies.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+
+                    <button 
+                      onClick={async () => {
+                        if (!newPersonnelInWO.name) return;
+                        let companyId = newPersonnelInWO.company_id;
+                        
+                        try {
+                          if (showAddCompanyInWO && newCompanyInWO.name) {
+                            const cRes = await fetch('/api/companies', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify(newCompanyInWO)
+                            });
+                            if (cRes.ok) {
+                              const cData = await cRes.json();
+                              companyId = cData.id.toString();
+                            }
+                          }
+                          
+                          const pRes = await fetch('/api/personnel', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name: newPersonnelInWO.name, company_id: companyId })
+                          });
+                          
+                          if (pRes.ok) {
+                            const pData = await pRes.json();
+                            await fetchData();
+                            
+                            if (newPersonnelTarget?.type === 'activity' && newPersonnelTarget.index !== undefined) {
+                              const updated = [...editingWO.activities];
+                              updated[newPersonnelTarget.index].personnel_id = pData.id;
+                              setEditingWO({ ...editingWO, activities: updated });
+                            }
+                            
+                            setShowAddPersonnelInWO(false);
+                            setNewPersonnelInWO({ name: '', company_id: '' });
+                            setShowAddCompanyInWO(false);
+                            setNewCompanyInWO({ name: '' });
+                            setNewPersonnelTarget(null);
+                          }
+                        } catch (err) { console.error(err); }
+                      }}
+                      className="w-full py-2 text-xs font-bold uppercase bg-[#141414] text-[#E4E3E0]"
+                    >
+                      Guardar y Seleccionar
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

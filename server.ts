@@ -562,13 +562,20 @@ async function startServer() {
   });
 
   app.patch("/api/work-orders/:id/start", (req, res) => {
-    const { personnel_id, diagnostic_notes } = req.body;
+    const { personnel_id, diagnostic_notes, activities } = req.body;
     const order = db.prepare("SELECT machine_id FROM work_orders WHERE id = ?").get(req.params.id) as { machine_id: number } | undefined;
     if (!order) return res.status(404).json({ error: "Work order not found" });
     
+    const activitiesJson = activities ? JSON.stringify(activities) : undefined;
+
     db.transaction(() => {
-      db.prepare("UPDATE work_orders SET started_at = CURRENT_TIMESTAMP, status = 'in_progress', personnel_id = ?, diagnostic_notes = ? WHERE id = ?")
-        .run(personnel_id || null, diagnostic_notes || null, req.params.id);
+      if (activitiesJson !== undefined) {
+        db.prepare("UPDATE work_orders SET started_at = CURRENT_TIMESTAMP, status = 'in_progress', personnel_id = ?, diagnostic_notes = ?, activities = ? WHERE id = ?")
+          .run(personnel_id || null, diagnostic_notes || null, activitiesJson, req.params.id);
+      } else {
+        db.prepare("UPDATE work_orders SET started_at = CURRENT_TIMESTAMP, status = 'in_progress', personnel_id = ?, diagnostic_notes = ? WHERE id = ?")
+          .run(personnel_id || null, diagnostic_notes || null, req.params.id);
+      }
       if (order.machine_id) {
         db.prepare("UPDATE machines SET status = 'maintenance' WHERE id = ?").run(order.machine_id);
       }
