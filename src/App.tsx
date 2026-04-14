@@ -1054,6 +1054,11 @@ export default function App() {
     }
   };
 
+  const pendingSchedulesToday = schedules.filter(s => isTaskDueOn(s, new Date()) && !workOrders.some(wo => wo.schedule_id === s.id && isSameDay(parseLocalDate(wo.created_at), new Date())));
+  const openWorkOrdersToday = workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date()) && wo.status === 'open');
+  const inProgressWorkOrdersToday = workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date()) && wo.status === 'in_progress');
+  const closedWorkOrdersToday = workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date()) && wo.status === 'closed');
+
   return (
     <div className="flex h-screen bg-[#E4E3E0] text-[#141414] font-sans">
       {/* Sidebar */}
@@ -1118,50 +1123,121 @@ export default function App() {
                       <p className="text-[10px] font-mono uppercase opacity-50">{format(new Date(), 'EEEE, dd MMMM yyyy')}</p>
                     </div>
                     <div className="bg-[#141414] text-[#E4E3E0] px-3 py-1 text-[10px] font-mono uppercase">
-                      {schedules.filter(s => isTaskDueOn(s, new Date()) && !workOrders.some(wo => wo.schedule_id === s.id && isSameDay(parseLocalDate(wo.created_at), new Date()))).length} Pendientes
+                      {pendingSchedulesToday.length + openWorkOrdersToday.length} Pendientes
                     </div>
                   </div>
                   <div className="space-y-2">
-                    {schedules.filter(s => isTaskDueOn(s, new Date()) && !workOrders.some(wo => wo.schedule_id === s.id && isSameDay(parseLocalDate(wo.created_at), new Date()))).length === 0 ? (
+                    {pendingSchedulesToday.length === 0 && openWorkOrdersToday.length === 0 ? (
                       <p className="text-xs italic opacity-50">No hay tareas programadas para hoy.</p>
                     ) : (
-                      schedules.filter(s => isTaskDueOn(s, new Date()) && !workOrders.some(wo => wo.schedule_id === s.id && isSameDay(parseLocalDate(wo.created_at), new Date()))).map(s => (
-                        <div 
-                          key={s.id} 
-                          className="flex items-center justify-between p-3 border border-[#141414]/10 hover:bg-gray-50 transition-colors cursor-pointer"
-                          onClick={() => {
-                            setSelectedTask(s);
-                            setShowTaskDetailsModal(true);
-                          }}
-                        >
+                      <>
+                        {pendingSchedulesToday.map(s => (
+                          <div 
+                            key={s.id} 
+                            className="flex items-center justify-between p-3 border border-[#141414]/10 hover:bg-gray-50 transition-colors cursor-pointer"
+                            onClick={() => {
+                              setSelectedTask(s);
+                              setShowTaskDetailsModal(true);
+                            }}
+                          >
+                            <div>
+                              <p className="text-sm font-bold uppercase">{s.machine_name}</p>
+                              <p className="text-xs opacity-60">{s.task_name} {s.part_name && `• ${s.part_name}`}</p>
+                              {s.personnel_name && <p className="text-[10px] mt-1 font-mono">Responsable: {s.personnel_name} ({s.company_name})</p>}
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <button 
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  askConfirmation(`¿Desea generar una Orden de Trabajo para: ${s.task_name}?`, async () => {
+                                    await createWorkOrderDirectly(s);
+                                  });
+                                }}
+                                className="text-[10px] font-bold uppercase border border-[#141414] px-3 py-1 hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
+                              >
+                                Crear OT
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteSchedule(s.id);
+                                }}
+                                className="p-1 text-gray-400 hover:text-red-600 transition-colors"
+                                title="Eliminar Tarea Programada"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        {openWorkOrdersToday.map(wo => (
+                          <div 
+                            key={`wo-${wo.id}`} 
+                            className="flex items-center justify-between p-3 border border-amber-100 bg-amber-50/30 hover:bg-amber-50 transition-colors cursor-pointer"
+                            onClick={() => {
+                              setWOToStart(wo.id);
+                              setStartWOPersonnelId(wo.personnel_id ? String(wo.personnel_id) : '');
+                              setStartWODiagnostic(wo.diagnostic_notes || '');
+                              setStartWOActivities(wo.activities || []);
+                              setShowStartWOModal(true);
+                            }}
+                          >
+                            <div>
+                              <p className="text-sm font-bold uppercase text-amber-900">{wo.machine_name}</p>
+                              <p className="text-xs opacity-60">{wo.description}</p>
+                              <div className="flex items-center mt-1 space-x-2">
+                                <span className="text-[9px] font-bold uppercase bg-amber-100 text-amber-700 px-1">OT Creada</span>
+                                <span className="text-[9px] opacity-40 font-mono">{format(parseLocalDate(wo.created_at), 'HH:mm')}</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setWOToStart(wo.id);
+                                  setStartWOPersonnelId(wo.personnel_id ? String(wo.personnel_id) : '');
+                                  setStartWODiagnostic(wo.diagnostic_notes || '');
+                                  setStartWOActivities(wo.activities || []);
+                                  setShowStartWOModal(true);
+                                }}
+                                className="text-[10px] font-bold uppercase border border-amber-600 text-amber-700 px-3 py-1 hover:bg-amber-600 hover:text-white transition-colors"
+                              >
+                                Iniciar OT
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* In Progress Tasks Today */}
+                <div className="bg-white border border-[#141414] p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <h3 className="text-xl font-serif italic">Tareas en Proceso</h3>
+                      <p className="text-[10px] font-mono uppercase opacity-50">Órdenes de trabajo generadas hoy</p>
+                    </div>
+                    <div className="bg-blue-600 text-white px-3 py-1 text-[10px] font-mono uppercase">
+                      {inProgressWorkOrdersToday.length} En Proceso
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {inProgressWorkOrdersToday.length === 0 ? (
+                      <p className="text-xs italic opacity-50">No hay tareas en proceso hoy.</p>
+                    ) : (
+                      inProgressWorkOrdersToday.map(wo => (
+                        <div key={wo.id} className="flex items-center justify-between p-3 border border-blue-100 bg-blue-50/30">
                           <div>
-                            <p className="text-sm font-bold uppercase">{s.machine_name}</p>
-                            <p className="text-xs opacity-60">{s.task_name} {s.part_name && `• ${s.part_name}`}</p>
-                            {s.personnel_name && <p className="text-[10px] mt-1 font-mono">Responsable: {s.personnel_name} ({s.company_name})</p>}
+                            <p className="text-sm font-bold uppercase text-blue-900">{wo.machine_name}</p>
+                            <p className="text-xs opacity-60">{wo.description}</p>
+                            <div className="flex items-center mt-1 space-x-2">
+                              <span className="text-[9px] font-bold uppercase bg-blue-100 text-blue-700 px-1">En Progreso</span>
+                              <span className="text-[9px] opacity-40 font-mono">{format(parseLocalDate(wo.created_at), 'HH:mm')}</span>
+                            </div>
                           </div>
-                          <div className="flex items-center space-x-2">
-                            <button 
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                askConfirmation(`¿Desea generar una Orden de Trabajo para: ${s.task_name}?`, async () => {
-                                  await createWorkOrderDirectly(s);
-                                });
-                              }}
-                              className="text-[10px] font-bold uppercase border border-[#141414] px-3 py-1 hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors"
-                            >
-                              Crear OT
-                            </button>
-                            <button 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                deleteSchedule(s.id);
-                              }}
-                              className="p-1 text-gray-400 hover:text-red-600 transition-colors"
-                              title="Eliminar Tarea Programada"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
+                          <Play className="w-4 h-4 text-blue-600" />
                         </div>
                       ))
                     )}
@@ -1176,14 +1252,14 @@ export default function App() {
                       <p className="text-[10px] font-mono uppercase opacity-50">Actividades completadas el día de hoy</p>
                     </div>
                     <div className="bg-emerald-600 text-white px-3 py-1 text-[10px] font-mono uppercase">
-                      {workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date())).length} Realizadas
+                      {workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date()) && wo.status === 'closed').length} Realizadas
                     </div>
                   </div>
                   <div className="space-y-2">
-                    {workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date())).length === 0 ? (
+                    {workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date()) && wo.status === 'closed').length === 0 ? (
                       <p className="text-xs italic opacity-50">No se han realizado tareas programadas hoy.</p>
                     ) : (
-                      workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date())).map(wo => (
+                      workOrders.filter(wo => wo.schedule_id && isSameDay(parseLocalDate(wo.created_at), new Date()) && wo.status === 'closed').map(wo => (
                         <div key={wo.id} className="flex items-center justify-between p-3 border border-emerald-100 bg-emerald-50/30">
                           <div>
                             <p className="text-sm font-bold uppercase text-emerald-900">{wo.machine_name}</p>
